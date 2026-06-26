@@ -4,6 +4,12 @@ import numpy as np
 import os
 from .base import solver_base
 from .perf import do_profile
+from ._apbc_phase import (
+    normalize_boundary_condition,
+    transfer_phase,
+    inverse_gauge_phase,
+    twist_offset,
+)
 
 logger = logging.getLogger("qlms").getChild("uhfk")
 
@@ -30,6 +36,7 @@ class UHFk(solver_base):
         self._init_mode(info_mode)  # Set solver modes like Fock term
         self._init_param()          # Initialize parameters
         self._init_lattice()        # Setup lattice geometry
+        self._check_apbc_interactions()
         self._init_orbit()          # Setup orbital structure
         # self._dump_param_ham()
         self._check_interaction()   # Validate interactions
@@ -230,6 +237,53 @@ class UHFk(solver_base):
 
         self.shape = (nx, ny, nz)
         self.nvol = nvol
+
+        # ----- APBC: read & normalize BoundaryCondition (v1 scope guards) -----
+        bc_raw = self.param_mod.get("BoundaryCondition", None)
+        if bc_raw is None:
+            self.boundary_theta = (0.0, 0.0, 0.0)
+            self.boundary_periodic = True
+        else:
+            self.boundary_theta = normalize_boundary_condition(bc_raw)
+            self.boundary_periodic = all(t == 0.0 for t in self.boundary_theta)
+
+        if not self.boundary_periodic:
+            if "SubShape" not in self.param_mod:
+                raise ValueError(
+                    "APBC requires explicit SubShape = [1, 1, 1] in [mode.param] "
+                    "(SubShape default is CellShape; v1 only supports [1, 1, 1])"
+                )
+            if self.subshape != (1, 1, 1):
+                raise ValueError(
+                    f"APBC requires SubShape = [1, 1, 1] (got {list(self.subshape)}); "
+                    "SubShape > 1 + APBC is deferred to v2"
+                )
+
+        logger.info(
+            "    BoundaryCondition = {} (theta/pi = {})".format(
+                bc_raw if bc_raw is not None else ["periodic"] * 3,
+                [t / np.pi for t in self.boundary_theta],
+            )
+        )
+
+    def _check_apbc_interactions(self) -> None:
+        """Reject non-density-type interactions when APBC is active (v1 scope).
+
+        Density-density terms (CoulombIntra/Inter/Coulomb, Hund, Ising, Exchange)
+        are gauge-invariant under the site-dependent gauge applied for APBC.
+        PairHop / PairLift are not; v1 fails fast. See spec sections 6, 8.
+        """
+        if self.boundary_periodic:
+            return
+        forbidden = ("PairHop", "PairLift")
+        present = [name for name in forbidden if name in self.param_ham
+                   and self.param_ham[name]]
+        if present:
+            raise ValueError(
+                f"APBC + {present[0]} is not supported in v1 "
+                "(non-density interaction is not gauge-invariant under the "
+                "site-dependent gauge; deferred to v2)"
+            )
 
     @do_profile
     def _init_orbit(self):
@@ -1018,10 +1072,18 @@ class UHFk(solver_base):
         norb     = self.norb
         nd       = self.nd
 
+        # APBC: gauge phase on each transfer entry (PBC -> phase = 1, no-op).
+        theta = np.array(self.boundary_theta, dtype=np.float64)
+        L = np.array(self.cellshape, dtype=np.float64)
+        apbc_active = not self.boundary_periodic
+
         if self.enable_spin_orbital == True:
             tab_r = np.zeros((nx,ny,nz,nd,nd), dtype=np.complex128)
 
             for (irvec,orbvec), v in self.param_ham["Transfer"].items():
+                if apbc_active:
+                    rv = np.asarray(irvec, dtype=np.float64)
+                    v = v * transfer_phase(rv, theta, L)
                 tab_r[(*irvec, *orbvec)] = v
 
             # fourier transform
@@ -1037,6 +1099,9 @@ class UHFk(solver_base):
             has_spin_dep = False
             for (irvec,orbvec), v in self.param_ham["Transfer"].items():
                 if orbvec[0] < norb and orbvec[1] < norb:
+                    if apbc_active:
+                        rv = np.asarray(irvec, dtype=np.float64)
+                        v = v * transfer_phase(rv, theta, L)
                     tab_r[(*irvec, *orbvec)] = v
                 else:
                     has_spin_dep = True
@@ -2169,6 +2234,7 @@ class UHFk(solver_base):
                      eigenvector = evv,
                      wavevector_unit = self.kvec,
                      wavevector_index = self.wavenum_table,
+                     twist_offset = twist_offset(self.boundary_theta),
                      )
             logger.info("save_results: save eigenvalues and eigenvectors in file {}".format(file_name))
 
@@ -2280,6 +2346,13 @@ class UHFk(solver_base):
 
                 v = gr[idx,s,a,t,b]
 
+                if not self.boundary_periodic:
+                    r_i = np.array([ix, iy, iz], dtype=np.float64)
+                    r_j = np.array([jx, jy, jz], dtype=np.float64)
+                    theta = np.array(self.boundary_theta, dtype=np.float64)
+                    Lvec = np.array(self.cellshape, dtype=np.float64)
+                    v = v * inverse_gauge_phase(r_i, r_j, theta, Lvec)
+
                 fw.write("{:3} {:3} {:3} {:3}  {:.12e} {:.12e}\n".format(
                     i, s, j, t, v.real, v.imag
                 ))
@@ -2371,3 +2444,21 @@ class UHFk(solver_base):
                 file_name = os.path.join(path_to_output, prefix + type + ".dat")
                 self._export_interaction(type, file_name)
                 logger.info("export {} to {}".format(type, file_name))
+        bc_file = os.path.join(path_to_output, prefix + "BoundaryCondition.dat")
+        self._export_boundary_condition(bc_file)
+        logger.info("export BoundaryCondition to {}".format(bc_file))
+
+    def _export_boundary_condition(self, file_name):
+        """Write the BoundaryCondition that the SCF ran under as a separate file.
+
+        Format: header line + one direction label per line (3 lines: x, y, z).
+        Values: "periodic" or "antiperiodic". Always written alongside
+        Transfer.dat so consumers reconstruct the correct boundary.
+        """
+        labels = []
+        for t in self.boundary_theta:
+            labels.append("antiperiodic" if t != 0.0 else "periodic")
+        with open(file_name, "w") as fw:
+            fw.write("# BoundaryCondition for uhfk export (per direction: x, y, z)\n")
+            for label in labels:
+                fw.write("{}\n".format(label))
