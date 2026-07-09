@@ -85,6 +85,24 @@ energy `-6.39103626...` also matches the closed-form HF total for
 quarter-filled L=8 APBC Hubbard with U=2:
 `E = -8 cos(pi/8) + U L (n/2)^2 = -7.391036... + 1.0 = -6.391036...`.
 
+## Case `case_1d_hubbard_sublattice`
+
+Same physical problem as `case_1d_hubbard` (L=8 1D Hubbard, t=1, U=2,
+quarter filling, APBC in x), but the H-wave side uses **SubShape =
+[2, 1, 1]**. Confirms that APBC under sublattice fold reproduces the
+same physical Green function as without sublattice fold, end-to-end
+against ComplexUHF.
+
+```
+[case_1d_hubbard_sublattice] energy:   hwave=-6.3910362638e+00  complexuhf=-6.3910362601e+00  rel=5.81e-10  OK
+[case_1d_hubbard_sublattice] greenone: max |delta| = 1.187e-09 over 16 (i,s,j,t) pairs    OK
+```
+
+Energy and per-site Green agree with both ComplexUHF and the
+SubShape=[1,1,1] run to ~1e-9. This validates the v2 sublattice APBC
+implementation end-to-end (spectrum, fold, gauge unwinding) when
+combined with the green deflate fix on develop (PR #35).
+
 ## Runtime workaround
 
 `qlmsio.wan90.read_geometry` uses the deprecated `np.float` alias

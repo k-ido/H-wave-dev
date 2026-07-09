@@ -39,19 +39,27 @@ def test_apbc_with_explicit_subshape_111_is_accepted():
     assert s.boundary_periodic is False
 
 
-def test_apbc_with_omitted_subshape_raises():
+def test_apbc_with_omitted_subshape_is_accepted():
+    """v2: default SubShape (= CellShape) is acceptable under APBC.
+
+    The gauge phase is applied to Transfer in its pre-fold signed-irvec
+    representation, so any sublattice choice is valid (including the
+    degenerate single-supercell SubShape = CellShape case).
+    """
     s = _make_stub(_base_mod(boundary=["antiperiodic", "periodic", "periodic"]))
-    with pytest.raises(ValueError, match="SubShape"):
-        s._init_lattice()
+    s._init_lattice()
+    assert s.boundary_periodic is False
 
 
-def test_apbc_with_nontrivial_subshape_raises():
+def test_apbc_with_nontrivial_subshape_is_accepted():
+    """v2: SubShape > [1, 1, 1] combined with APBC is supported."""
     s = _make_stub(_base_mod(
         boundary=["antiperiodic", "periodic", "periodic"],
         subshape=[2, 1, 1],
     ))
-    with pytest.raises(ValueError, match=r"SubShape.*\[1, 1, 1\]"):
-        s._init_lattice()
+    s._init_lattice()
+    assert s.boundary_periodic is False
+    assert s.subshape == (2, 1, 1)
 
 
 def test_bad_boundary_length_raises():

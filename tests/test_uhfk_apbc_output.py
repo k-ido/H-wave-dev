@@ -165,3 +165,128 @@ def test_export_transfer_is_unchanged_under_apbc():
         re = float(body_rx1[0][5])
         im = float(body_rx1[0][6])
         np.testing.assert_allclose([re, im], [-1.0, 0.0], atol=1e-12)
+
+
+def test_export_transfer_post_init_interaction_is_unchanged_under_apbc():
+    """Regression: even after _init_interaction mutates Transfer in place with
+    the APBC gauge phase, the export path must emit the raw (un-phased)
+    values via the _transfer_raw_export snapshot.
+
+    The earlier stub-based test bypassed _init_interaction entirely, so it
+    could not catch a double-twist regression on round-trip
+    (exported phased Transfer + BoundaryCondition.dat would be re-applied as
+    APBC by a downstream tool). This test runs the actual phase injection.
+    """
+    from hwave.solver._apbc_phase import normalize_boundary_condition
+
+    theta = normalize_boundary_condition(["antiperiodic", "periodic", "periodic"])
+    s = _make_stub_with_export_state(theta)
+    # _init_interaction needs these to traverse the APBC injection branch.
+    s.cellshape = (L, 1, 1)
+    s.has_sublattice = False
+
+    # Sanity: pre-injection Transfer is -1.0 + 0j.
+    pre = s.param_ham["Transfer"][((1, 0, 0), (0, 0))]
+    np.testing.assert_allclose([pre.real, pre.imag], [-1.0, 0.0], atol=1e-12)
+
+    s._init_interaction()
+
+    # Post-injection Transfer carries the gauge phase (so the SCF solves the
+    # correct twisted Hamiltonian): for theta_x=pi, R=(1,0,0), L=4, phase =
+    # exp(i pi/4) so the entry is -1.0 * exp(i pi/4).
+    post = s.param_ham["Transfer"][((1, 0, 0), (0, 0))]
+    expected = -1.0 * np.exp(1j * np.pi / L)
+    np.testing.assert_allclose([post.real, post.imag],
+                               [expected.real, expected.imag], atol=1e-12)
+
+    # But the exported Transfer.dat must still contain the raw -1.0 value.
+    with tempfile.TemporaryDirectory() as tmp:
+        s._export_hamiltonian(tmp, "post_")
+        transfer_path = Path(tmp) / "post_Transfer.dat"
+        lines = transfer_path.read_text().splitlines()
+        data_lines = [ln for ln in lines if ln.strip() and not ln[0].isalpha()]
+        body = [ln.split() for ln in data_lines]
+        body_rx1 = [row for row in body if len(row) == 7 and row[0] == "1"]
+        assert body_rx1, "Transfer.dat is missing the R=(1,0,0) entry"
+        re = float(body_rx1[0][5])
+        im = float(body_rx1[0][6])
+        np.testing.assert_allclose([re, im], [-1.0, 0.0], atol=1e-12)
+
+
+def _make_stub_with_green_state(boundary_theta):
+    """UHFk stub minimal for _save_green / _read_green to run."""
+    s = UHFk.__new__(UHFk)
+    s.has_sublattice = False
+    s.boundary_theta = tuple(boundary_theta)
+    s.boundary_periodic = all(t == 0.0 for t in boundary_theta)
+    # A tiny self.Green; values don't matter for metadata tests.
+    s.Green = np.zeros((L, NS, NORB, NS, NORB), dtype=np.complex128)
+    return s
+
+
+def test_green_npz_records_boundary_theta_under_apbc():
+    """green.npz must include boundary_theta so downstream tools know the
+    gauge state of the stored Green."""
+    from hwave.solver._apbc_phase import normalize_boundary_condition
+    theta = normalize_boundary_condition(["antiperiodic", "periodic", "periodic"])
+    s = _make_stub_with_green_state(theta)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "green.npz"
+        s._save_green(str(path))
+        data = dict(np.load(path, allow_pickle=False))
+        assert "boundary_theta" in data, "green.npz missing boundary_theta metadata"
+        np.testing.assert_allclose(data["boundary_theta"], np.array([np.pi, 0.0, 0.0]))
+
+
+def test_green_npz_records_boundary_theta_for_pbc():
+    """boundary_theta=[0,0,0] is also recorded under PBC, so the metadata key
+    is always present (downstream tools can assume it exists)."""
+    from hwave.solver._apbc_phase import normalize_boundary_condition
+    theta = normalize_boundary_condition(["periodic"] * 3)
+    s = _make_stub_with_green_state(theta)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "green.npz"
+        s._save_green(str(path))
+        data = dict(np.load(path, allow_pickle=False))
+        assert "boundary_theta" in data
+        np.testing.assert_allclose(data["boundary_theta"], np.zeros(3))
+
+
+def test_read_green_warns_on_boundary_mismatch(caplog):
+    """If green.npz was saved under one boundary but the current run uses a
+    different boundary, _read_green should emit a warning."""
+    from hwave.solver._apbc_phase import normalize_boundary_condition
+    saved_theta = normalize_boundary_condition(["antiperiodic", "periodic", "periodic"])
+    s_save = _make_stub_with_green_state(saved_theta)
+    current_theta = normalize_boundary_condition(["periodic"] * 3)
+    s_load = _make_stub_with_green_state(current_theta)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "green.npz"
+        s_save._save_green(str(path))
+        import logging
+        with caplog.at_level(logging.WARNING, logger="hwave.solver.uhfk"):
+            data = s_load._read_green(str(path))
+        # The Green data itself still comes back (just a warning, not an error).
+        assert data is not None
+        # The warning mentions boundary_theta divergence.
+        msgs = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("boundary_theta" in m for m in msgs), \
+            "_read_green should warn on boundary_theta mismatch"
+
+
+def test_read_green_no_warning_on_matching_boundary(caplog):
+    """No warning when the saved and current boundary match."""
+    from hwave.solver._apbc_phase import normalize_boundary_condition
+    theta = normalize_boundary_condition(["antiperiodic", "periodic", "antiperiodic"])
+    s_save = _make_stub_with_green_state(theta)
+    s_load = _make_stub_with_green_state(theta)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "green.npz"
+        s_save._save_green(str(path))
+        import logging
+        with caplog.at_level(logging.WARNING, logger="hwave.solver.uhfk"):
+            s_load._read_green(str(path))
+        boundary_warns = [r for r in caplog.records
+                          if r.levelname == "WARNING" and "boundary_theta" in r.getMessage()]
+        assert not boundary_warns, \
+            "_read_green should NOT warn when boundaries match"

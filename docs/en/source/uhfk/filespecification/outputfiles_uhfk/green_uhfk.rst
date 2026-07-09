@@ -27,6 +27,18 @@ When the sublattice is considerd,
 the Green's function in unit of the sublattice is also stored with the key ``green_sublattice``.
 The indices of the data are regarded as those of the sublattice.
 
+When ``BoundaryCondition`` includes ``antiperiodic`` directions, the
+Green's function stored under ``green`` (and ``green_sublattice``) is in the
+gauge-transformed basis used internally by the SCF, NOT the physical
+:math:`\langle c_{i\sigma_1}^{\dagger}c_{j\sigma_2}^{\phantom{\dagger}}\rangle`
+on the antiperiodic boundary. The applied twist is recorded as
+``boundary_theta`` in the same npz file. The user-facing physical Green
+under APBC is emitted by ``onebodyg`` (``greenone.dat``), where the
+inverse gauge phase is undone per (i, j) pair before output.
+Restarting from a Green saved under APBC must be done with the same
+``BoundaryCondition``; a mismatch is reported as a warning at restart
+read time.
+
 The following code is an example for reading the data from the output file.
 
 .. code-block:: python

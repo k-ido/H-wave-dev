@@ -37,8 +37,28 @@ def nn_1d(t=1.0):
     return {((1, 0, 0), (0, 0)): -t, ((-1, 0, 0), (0, 0)): -t}
 
 
+def _apply_pre_fold_phase(s):
+    """Mimic _init_interaction's APBC pre-fold phase injection.
+
+    Production wires APBC phase into Transfer in _init_interaction, before any
+    sublattice fold, using the original signed irvec. Stub-based tests that
+    bypass __init__ and call _make_ham_trans() directly must apply the phase
+    themselves; this helper does that for the no-sublattice case.
+    """
+    if s.boundary_periodic:
+        return
+    from hwave.solver._apbc_phase import transfer_phase
+    theta_arr = np.array(s.boundary_theta, dtype=np.float64)
+    L_arr = np.array(s.cellshape, dtype=np.float64)
+    s.param_ham["Transfer"] = {
+        k: v * transfer_phase(np.asarray(k[0], dtype=np.float64), theta_arr, L_arr)
+        for k, v in s.param_ham["Transfer"].items()
+    }
+
+
 def hamk(cellshape, transfer, theta):
     s = make_trans_stub(cellshape, transfer, boundary_theta=theta)
+    _apply_pre_fold_phase(s)
     s._make_ham_trans()
     return s.ham_trans.copy()
 

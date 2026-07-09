@@ -71,3 +71,48 @@ def inverse_gauge_phase(
 def twist_offset(theta: Iterable[float]) -> np.ndarray:
     """Return [theta_d / (2*pi)] per direction (values in {0, 1/2})."""
     return np.array([float(t) / (2.0 * np.pi) for t in theta], dtype=np.float64)
+
+
+def sublattice_offset(
+    orb_index: int, norb_orig: int, subshape: Sequence[int]
+) -> tuple[int, int, int]:
+    """Extract the sublattice site (bx, by, bz) from a folded orbital index.
+
+    Inverse of the encoding used by ``UHFk._reshape_interaction`` (see uhfk.py):
+      orb_index = orig_orb + norb_orig * (bx + Bx * (by + By * bz))                  (non-spin-orbital)
+      orb_index = orig_orb + norb_orig * (bx + Bx * (by + By * (bz + Bz * s)))       (spin-orbital)
+    Only the spatial (bx, by, bz) components are returned; the spin component
+    in spin-orbital mode lives at a higher position and does NOT affect the
+    gauge phase (gauge acts on real-space position only).
+    """
+    Bx, By, Bz = subshape
+    subl_idx = orb_index // norb_orig
+    bx = subl_idx % Bx
+    by = (subl_idx // Bx) % By
+    bz = (subl_idx // (Bx * By)) % Bz
+    return (int(bx), int(by), int(bz))
+
+
+def full_lattice_displacement(
+    irvec: Sequence[int],
+    alpha: int,
+    beta: int,
+    norb_orig: int,
+    subshape: Sequence[int],
+) -> tuple[int, int, int]:
+    """Compute the full-lattice displacement Delta = r_target - r_source
+    for a sublattice-folded transfer entry T[(irvec, (alpha, beta))].
+
+    Per spec section 3.5:
+      Delta_d = irvec_d * SubShape_d + (s_beta_d - s_alpha_d)
+    where (s_alpha, s_beta) are the sublattice sites recovered by
+    sublattice_offset() from the folded orbital indices alpha and beta.
+    """
+    Bx, By, Bz = subshape
+    sa = sublattice_offset(alpha, norb_orig, subshape)
+    sb = sublattice_offset(beta, norb_orig, subshape)
+    return (
+        int(irvec[0]) * Bx + (sb[0] - sa[0]),
+        int(irvec[1]) * By + (sb[1] - sa[1]),
+        int(irvec[2]) * Bz + (sb[2] - sa[2]),
+    )

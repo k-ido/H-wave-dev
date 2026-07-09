@@ -179,7 +179,16 @@ def test_end_to_end_physical_green_matches_analytic_1d():
     s.param_ham = {
         "Transfer": {((1, 0, 0), (0, 0)): -t, ((-1, 0, 0), (0, 0)): -t},
     }
-    # This applies the gauge phase to tab_r and FFTs to k-space.
+    # Production wires the APBC gauge phase into Transfer in _init_interaction
+    # (pre-fold, signed irvec), not in _make_ham_trans. This stub bypasses
+    # __init__, so mimic that step explicitly before FFT-ing.
+    from hwave.solver._apbc_phase import transfer_phase
+    theta_arr = np.array(s.boundary_theta, dtype=np.float64)
+    L_arr = np.array(s.cellshape, dtype=np.float64)
+    s.param_ham["Transfer"] = {
+        k: v * transfer_phase(np.asarray(k[0], dtype=np.float64), theta_arr, L_arr)
+        for k, v in s.param_ham["Transfer"].items()
+    }
     s._make_ham_trans()
     # ham_trans shape: (nvol, nd, nd) = (L, 2, 2). For our spin-symmetric
     # Hamiltonian, each H(k_n) is a scalar * eye(2) -> two degenerate eigs.

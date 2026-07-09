@@ -90,15 +90,15 @@ Parameters
   ``"periodic"`` / ``"P"`` and ``"antiperiodic"`` / ``"AP"``.
   Antiperiodic corresponds to a twist angle of :math:`\pi`.
 
-  In v1, ``BoundaryCondition`` containing any ``"antiperiodic"`` entry requires
-  ``SubShape = [1, 1, 1]`` to be set explicitly (the default value of
-  ``SubShape`` is ``CellShape``, which is rejected when combined with
-  antiperiodic boundaries).
+  Compatible with any ``SubShape``, including the default
+  ``SubShape = CellShape``. The gauge phase is applied to the input
+  ``Transfer`` in its original signed-displacement representation before
+  any sublattice fold, so the choice of ``SubShape`` does not change the
+  physical result.
 
   Non-density-type interactions (``PairHop``, ``PairLift``) combined with
-  any antiperiodic direction are rejected in v1 because they are not gauge
-  invariant under the site-dependent gauge used to implement APBC. Support is
-  deferred to v2.
+  any antiperiodic direction are rejected, because they are not gauge
+  invariant under the site-dependent gauge used to implement APBC.
 
 - ``T``
 
