@@ -15,6 +15,7 @@ cp -r "${SRC}"/* "${BUILD}/"
 rm -rf "${BUILD}/build"   # remove stale CMake cache from host
 cd "${BUILD}" && mkdir -p build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release > "${HERE}/build/cmake.log" 2>&1
-make UHF vmcdry.out -j2 > "${HERE}/build/make.log" 2>&1
-echo "Built UHF: ${BUILD}/build/src/ComplexUHF/UHF"
-echo "Built vmcdry: ${BUILD}/build/src/mVMC/vmcdry.out"
+make UHF vmcdry.out vmc.out -j2 > "${HERE}/build/make.log" 2>&1
+echo "Built UHF:     ${BUILD}/build/src/ComplexUHF/UHF"
+echo "Built vmcdry:  ${BUILD}/build/src/mVMC/vmcdry.out"
+echo "Built vmc.out: ${BUILD}/build/src/mVMC/vmc.out"
