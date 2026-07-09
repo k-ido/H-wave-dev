@@ -12,8 +12,11 @@ FIXTURE = os.path.join(
 )
 
 
-def _run_hwave(case_dir, boundary, ncond):
-    """Copy case_dir, patch input.toml, run H-wave UHFk. Return work dir."""
+def _run_hwave(case_dir, boundary, ncond, subshape=(1, 1, 1)):
+    """Copy case_dir, patch input.toml, run H-wave UHFk. Return work dir.
+
+    ``subshape`` overrides the SubShape line in input.toml when > [1,1,1].
+    """
     tmp = tempfile.mkdtemp(prefix="hwave_bridge_e2e_")
     for fn in os.listdir(case_dir):
         src = os.path.join(case_dir, fn)
@@ -38,6 +41,9 @@ def _run_hwave(case_dir, boundary, ncond):
         elif s.startswith("EPS"):
             # Tighten SCF convergence so the density check 1e-10 tol holds.
             new_lines.append("  EPS          = 14\n")
+        elif s.startswith("SubShape"):
+            sub_str = ", ".join(str(int(x)) for x in subshape)
+            new_lines.append(f"  SubShape     = [{sub_str}]\n")
         elif s.startswith("flag_fock"):
             new_lines.append("  flag_fock = false\n")
             saw_flag_fock = True
@@ -206,6 +212,46 @@ def test_e2e_apbc_case_1d_hubbard_density_check_passes():
         )
         assert result.returncode == 0, (
             f"bridge failed: stdout={result.stdout} stderr={result.stderr}"
+        )
+        assert "density check OK" in result.stdout
+    finally:
+        shutil.rmtree(work)
+
+
+def test_e2e_apbc_subshape_2_density_check_passes():
+    """APBC L=8 SubShape=[2,1,1] Ncond=4: bridge --check-density.
+
+    Codex adversarial-review v2: exercises the folded-eigen + unfold
+    path against H-wave's greenone.dat at 1e-10.
+    """
+    work = _run_hwave(
+        FIXTURE,
+        boundary=("antiperiodic", "periodic", "periodic"),
+        ncond=4,
+        subshape=(2, 1, 1),
+    )
+    try:
+        L = 8
+        orbitalidx_path = os.path.join(work, "orbitalidx.def")
+        _write_orbitalidx_apbc(orbitalidx_path, L)
+
+        onebodyg_path = os.path.join(work, "output", "greenone.dat")
+        out = os.path.join(work, "zqp_orbital_uhfk.dat")
+        result = subprocess.run(
+            [sys.executable, "tools/uhfk_to_mvmc.py",
+             "--input", os.path.join(work, "input.toml"),
+             "--eigen", os.path.join(work, "output", "eigen.npz"),
+             "--occupation", os.path.join(work, "output", "occupation.npz"),
+             "--geometry", os.path.join(work, "geometry_uhf.dat"),
+             "--orbitalidx", orbitalidx_path,
+             "--output", out,
+             "--check-density",
+             "--onebodyg-uhf", onebodyg_path,
+             "--epsilon-noise", "0"],
+            capture_output=True, text=True, cwd=REPO_ROOT,
+        )
+        assert result.returncode == 0, (
+            f"stdout={result.stdout} stderr={result.stderr}"
         )
         assert "density check OK" in result.stdout
     finally:

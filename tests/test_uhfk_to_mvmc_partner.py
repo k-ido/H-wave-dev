@@ -98,3 +98,17 @@ def test_partner_mixed_pbc_apbc_2d():
     # partner-of-partner identity
     for n_row in range(len(wv)):
         assert partners[partners[n_row]] == n_row
+
+
+def test_partner_apbc_folded_l4_from_l8_subshape_2():
+    """L=8 CellShape reduced by SubShape=[2,1,1] to folded L_folded=4.
+    APBC partner should follow (-n - 1) mod 4 (same as v1 L=4 APBC)."""
+    L_folded = 4
+    wv = np.array([[v, 0, 0] for v in _klist(L_folded)], dtype=np.int64)
+    theta = np.array([np.pi, 0.0, 0.0], dtype=np.float64)
+    L = np.array([L_folded, 1, 1], dtype=np.int64)
+
+    partners, is_self = find_partner_rows(wv, theta, L)
+    assert not np.any(is_self)
+    for n_row in range(L_folded):
+        assert partners[partners[n_row]] == n_row

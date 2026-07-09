@@ -28,9 +28,11 @@ def _klist(n):
 
 def test_apbc_l8_fij_carries_subtract_phase():
     """For APBC L=8, single occupied (k, -k) pair with v=1, F_phys carries
-    exp(+i k_phys (r_j - r_i)) and reproduces the physical density. With
-    tilde_k=0 occupied (k_phys = theta/L = pi/L for APBC), F[i, j]
-    = (1/L) exp(+i pi (r_j - r_i) / L)."""
+    exp(-i k_phys (r_j - r_i)) under the v2.1 positive-Bloch convention
+    (spec §3.3). With tilde_k=0 occupied (k_phys = theta/L = pi/L for
+    APBC), F[i, j] = (1/L) exp(-i pi (r_j - r_i) / L). The convention
+    matches H-wave's ``greenone.dat`` for physical UHF SCF outputs
+    (verified element-wise for the SubShape=[2,1,1] fixture)."""
     L = 8
     wv = np.array([[v, 0, 0] for v in _klist(L)], dtype=np.int64)
     site_positions = np.array([[i, 0, 0] for i in range(L)], dtype=np.float64)
@@ -58,12 +60,14 @@ def test_apbc_l8_fij_carries_subtract_phase():
 
     for i in range(L):
         for j in range(L):
-            # k_phys for tilde_k=0 is theta/L = pi/L; F = (1/L) e^{+i k_phys (r_j - r_i)}
-            expected = (1.0 / L) * np.exp(1j * np.pi * (j - i) / L)
+            # Positive-Bloch v2.1 convention: F[i, j] = (1/L)
+            # exp(-i k_phys (r_j - r_i)) with k_phys = pi/L for
+            # tilde_k=0 up occupied.
+            expected = (1.0 / L) * np.exp(-1j * np.pi * (j - i) / L)
             assert abs(F[i, j] - expected) < 1e-12, (
                 f"F[{i},{j}]={F[i,j]} expected={expected}"
             )
-            # And it must NOT match the old (wrong) add-add convention.
+            # And it must NOT match the pre-v2.1 add-add convention.
             wrong = (1.0 / L) * np.exp(-1j * np.pi * (i + j) / L)
             if abs(expected - wrong) > 1e-10:
                 assert abs(F[i, j] - wrong) > 1e-10, (
@@ -71,15 +75,18 @@ def test_apbc_l8_fij_carries_subtract_phase():
                 )
 
 
-def test_apbc_l8_density_matches_hwave_negative_bloch_for_n1():
-    """For APBC L=8 with only tilde_k = 1 occupied (Codex's test case),
-    the per-spin density G_up[0, 1] from the bridge must equal H-wave's
-    physical Green (negative-Bloch convention).
+def test_apbc_l8_density_matches_hwave_positive_bloch_for_n1():
+    """For APBC L=8 with only tilde_k = 1 occupied (Codex's test case
+    updated for v2.1), the per-spin density G_up[0, 1] from the bridge
+    must equal H-wave's physical Green under the positive-Bloch spec
+    §3.3 convention.
 
-    H-wave: G_phys[i, j] = exp(+i theta (r_i - r_j) / L) * (1/N) sum_k
-    |v(k)|^2 exp(-i tilde_k (r_j - r_i))
-          = (for N=8, theta=pi, tilde_k=2*pi/8, i=0, j=1, |v|=1)
-          = (1/8) exp(-i pi/8 - i 2pi/8) = (1/8) exp(-i 3pi/8).
+    H-wave (v2.1 convention verified against the SubShape=[2,1,1]
+    fixture greenone.dat to 1e-14):
+      G_phys[i, j] = (1/N) sum_k |v(k)|^2 exp(+i k_phys (r_j - r_i))
+    with k_phys = tilde_k + theta/L (positive-Bloch mapping). For
+    N=8, theta=pi, tilde_k=2*pi/8, i=0, j=1, |v|=1:
+      G_phys[0, 1] = (1/8) exp(+i pi/8 + i 2pi/8) = (1/8) exp(+i 3pi/8).
     """
     L = 8
     wv = np.array([[v, 0, 0] for v in _klist(L)], dtype=np.int64)
@@ -106,7 +113,7 @@ def test_apbc_l8_density_matches_hwave_negative_bloch_for_n1():
     )
     G_up = np.conj(A_up) @ A_up.T
 
-    expected = (1.0 / L) * np.exp(-1j * 3 * np.pi / L)
+    expected = (1.0 / L) * np.exp(+1j * 3 * np.pi / L)
     assert abs(G_up[0, 1] - expected) < 1e-12, (
         f"G_up[0,1] = {G_up[0, 1]}, expected H-wave value = {expected}"
     )

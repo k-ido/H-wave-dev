@@ -68,28 +68,52 @@ def _write_minimal_inputs(tmp, subshape=(1, 1, 1)):
     return paths
 
 
-def test_subshape_not_1_1_1_fails_fast():
-    """SubShape != [1, 1, 1] is rejected (v1 spec section 7)."""
+def test_subshape_not_dividing_cellshape_fails_fast():
+    """SubShape[d] must divide CellShape[d]. E.g. SubShape=[3,1,1] on
+    CellShape=[4,1,1] must be rejected (v2 fail-fast)."""
     with tempfile.TemporaryDirectory() as tmp:
-        paths = _write_minimal_inputs(tmp, subshape=(2, 1, 1))
+        paths = _write_minimal_inputs(tmp, subshape=(3, 1, 1))
         result = subprocess.run(
-            [
-                sys.executable, "tools/uhfk_to_mvmc.py",
-                "--input", paths["input"],
-                "--eigen", paths["eigen"],
-                "--occupation", paths["occupation"],
-                "--geometry", paths["geometry"],
-                "--orbitalidx", paths["orbitalidx"],
-                "--output", paths["output"],
-                "--no-check-density",
-            ],
+            [sys.executable, "tools/uhfk_to_mvmc.py",
+             "--input", paths["input"], "--eigen", paths["eigen"],
+             "--occupation", paths["occupation"],
+             "--geometry", paths["geometry"],
+             "--orbitalidx", paths["orbitalidx"],
+             "--output", paths["output"],
+             "--no-check-density"],
             capture_output=True, text=True, cwd=REPO_ROOT,
         )
-        assert result.returncode != 0, (
-            f"expected nonzero exit, got 0; stdout={result.stdout}; "
-            f"stderr={result.stderr}"
+        assert result.returncode != 0
+        assert "SubShape" in result.stderr and (
+            "divide" in result.stderr or "does not divide" in result.stderr
         )
-        assert "SubShape" in result.stderr or "SubShape" in result.stdout
+
+
+def test_eigenvector_shape_mismatch_fails_fast():
+    """If the eigen.npz shape does not match nd = 2 * norb_orig * subvol,
+    the CLI must raise before building amplitudes."""
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = _write_minimal_inputs(tmp, subshape=(2, 1, 1))
+        # Overwrite eigen.npz with the wrong nd (2 instead of 4)
+        np.savez(paths["eigen"],
+            eigenvalue=np.zeros((2, 2), dtype=np.float64),
+            eigenvector=np.zeros((2, 2, 2), dtype=np.complex128),
+            wavevector_unit=np.eye(3, dtype=np.float64),
+            wavevector_index=np.array([[v, 0, 0] for v in [0, -1]], dtype=np.int64),
+            twist_offset=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        )
+        result = subprocess.run(
+            [sys.executable, "tools/uhfk_to_mvmc.py",
+             "--input", paths["input"], "--eigen", paths["eigen"],
+             "--occupation", paths["occupation"],
+             "--geometry", paths["geometry"],
+             "--orbitalidx", paths["orbitalidx"],
+             "--output", paths["output"],
+             "--no-check-density"],
+            capture_output=True, text=True, cwd=REPO_ROOT,
+        )
+        assert result.returncode != 0
+        assert "shape" in result.stderr.lower() or "nd" in result.stderr.lower()
 
 
 def test_apbc_without_sign_column_fails_fast():

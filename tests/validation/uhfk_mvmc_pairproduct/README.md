@@ -80,7 +80,7 @@ The root cause is that mVMC's Pfaffian Slater algorithm becomes
 singular when the F matrix is exactly rank-deficient. The bridge now
 mirrors ComplexUHF's own workaround (``mVMC-1.4.0/src/ComplexUHF/
 output.c:274``), adding a tiny uniform noise to each averaged
-``params[idx]`` before writing. Noise amplitude defaults to ``1e-6``
+``params[idx]`` before writing. Noise amplitude defaults to ``1e-8``
 (``--epsilon-noise 0`` disables it). For ``ComplexType 1``
 (``orbitalidx.def``) the noise is applied to both real and imag parts;
 for ``ComplexType 0`` only the real part is perturbed. The default

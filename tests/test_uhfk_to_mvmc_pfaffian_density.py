@@ -39,10 +39,11 @@ FIXTURE = os.path.join(
 )
 
 
-def _run_hwave_uhfk(work, ncond=2, boundary="periodic"):
+def _run_hwave_uhfk(work, ncond=2, boundary="periodic", subshape=(1, 1, 1)):
     """Run H-wave on a L=8 1D Hubbard fixture with the bridge's
     occupation key enabled. ``boundary`` is the x-direction boundary
-    condition (``"periodic"`` or ``"antiperiodic"``). Returns work."""
+    condition (``"periodic"`` or ``"antiperiodic"``). ``subshape``
+    overrides the SubShape line in ``input.toml``. Returns work."""
     fixture = FIXTURE
     for fn in os.listdir(fixture):
         src = os.path.join(fixture, fn)
@@ -62,6 +63,9 @@ def _run_hwave_uhfk(work, ncond=2, boundary="periodic"):
             out_lines.append(f"  Ncond        = {ncond}\n")
         elif s.startswith("EPS"):
             out_lines.append("  EPS          = 14\n")
+        elif s.startswith("SubShape"):
+            sub_str = ", ".join(str(int(x)) for x in subshape)
+            out_lines.append(f"  SubShape     = [{sub_str}]\n")
         else:
             if "occupation" in s and "=" in s:
                 saw_occupation = True
@@ -366,3 +370,65 @@ def test_bridge_F_reconstructs_correct_density_apbc():
                 f"site {i} up: density {occ_up[i]:.6e} not translation-"
                 f"equivalent to site 0 ({ref_up0:.6e}) under APBC"
             )
+
+
+def test_bridge_F_reconstructs_correct_density_apbc_subshape_2():
+    """Same Pfaffian roundtrip test for APBC L=8 with SubShape=[2,1,1]
+    (folded lattice has 4 cells x 2 sublattice = 8 physical sites).
+    Ne=4 closed shell as in the v1 APBC case."""
+    nsite = 8
+    ne_up = 2
+    ne_dn = 2
+    ne_total = ne_up + ne_dn
+
+    with tempfile.TemporaryDirectory() as tmp:
+        hwave = os.path.join(tmp, "hwave")
+        os.makedirs(hwave)
+        _run_hwave_uhfk(hwave, ncond=ne_total, boundary="antiperiodic",
+                         subshape=(2, 1, 1))
+
+        mvmc = os.path.join(tmp, "mvmc")
+        os.makedirs(mvmc)
+        orbidx_path = os.path.join(mvmc, "orbitalidx.def")
+        with open(orbidx_path, "w") as fp:
+            fp.write("======================\n")
+            fp.write(f"NOrbitalIdx {nsite * nsite}\n")
+            fp.write("ComplexType 1\n")
+            fp.write("======================\n")
+            fp.write("======================\n")
+            for i in range(nsite):
+                for j in range(nsite):
+                    fp.write(f"{i} {j} {i * nsite + j}  1\n")
+            for k in range(nsite * nsite):
+                fp.write(f"{k} 1\n")
+
+        out_path = os.path.join(mvmc, "zqp_orbital_uhfk.dat")
+        env = os.environ.copy()
+        env["PYTHONPATH"] = REPO_ROOT + ":" + env.get("PYTHONPATH", "")
+        result = subprocess.run(
+            [sys.executable, "tools/uhfk_to_mvmc.py",
+             "--input", os.path.join(hwave, "input.toml"),
+             "--eigen", os.path.join(hwave, "output", "eigen.npz"),
+             "--occupation", os.path.join(hwave, "output", "occupation.npz"),
+             "--geometry", os.path.join(hwave, "geometry_uhf.dat"),
+             "--orbitalidx", orbidx_path,
+             "--output", out_path,
+             "--check-density",
+             "--onebodyg-uhf", os.path.join(hwave, "output", "greenone.dat"),
+             "--epsilon-noise", "0"],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"bridge failed: stdout={result.stdout}, stderr={result.stderr}"
+        )
+
+        F = _reconstruct_F_mvmc(orbidx_path, out_path, nsite)
+        occ_up, occ_dn, norm = _enumerate_density(F, ne_up, ne_dn, nsite)
+
+        diag = _parse_hwave_diag(os.path.join(hwave, "output", "greenone.dat"))
+        ref_up0 = diag[(0, 0)]
+        ref_dn0 = diag[(0, 1)]
+        assert abs(occ_up[0] - ref_up0) < 1e-10
+        assert abs(occ_dn[0] - ref_dn0) < 1e-10
+        for i in range(nsite):
+            assert abs(occ_up[i] - ref_up0) < 1e-10

@@ -1,51 +1,47 @@
 """(k, -k) time-reversal pair Fij builder.
 
-Spec sections 3.2 / 3.3 / 3.4 / 5.1.
+Spec sections 3.2 / 3.3 (v2.1 revision) / 3.4 / 5.1.
 
-Physical-basis amplitude convention (negative-Bloch, matches H-wave's
-``np.fft.fftn(..., norm='forward')`` k->r kernel ``exp(-i k r)``):
+Physical-basis amplitude convention (positive-Bloch, matches H-wave's
+folded-eigenvector convention: negative-gauge APBC transform
+``tilde_c_r = exp(-i theta r / L_phys) c_r`` combined with positive-
+Bloch tilde-annihilation Fourier ``c_R = (1/sqrt N) sum_k c_k exp(+i
+k R)`` — the latter follows from H-wave's ``ifftn(..., norm='forward')``
+on the Hamiltonian). The physical Bloch amplitude for the folded band
+``(k_folded, l)`` at site ``r_i`` is
 
-    psi_phys(r, k) = v(k) * exp(-i k_phys * r) / sqrt(N_k)
+    psi_phys(r_i, k_folded, l) = (1/sqrt(N_folded))
+                              * v[k_folded, sub_offset(r_i), l]
+                              * exp(+i k_folded . folded_cell(r_i))
+                              * exp(+i theta . r_i / L_phys).
 
-where k_phys = tilde_k + theta/L. For the (k, -k) time-reversal partner,
-the down side carries the OPPOSITE-sign theta correction:
+For the (k, -k) time-reversal partner the down side reads the same
+plane-wave envelope AT THE PARTNER row and the partner's eigenvector
+column:
 
-    A_up_{i, alpha(k, n)}   = (1/sqrt N) e^{-i tilde_k r_i} v_{k up n}   e^{-i theta r_i / L}
-    A_down_{j, alpha(k, n)} = (1/sqrt N) e^{+i tilde_k r_j} v_{k_p down n} e^{+i theta r_j / L}
+    A_up_{i, alpha(k, n)}   = plane_wave[k, i]         v[k,       row_up_i, n_up]
+    A_down_{j, alpha(k, n)} = plane_wave[k_p, j]       v[k_p,   row_down_j, n_down]
 
-(``k_p`` is the partner row whose tilde index residue matches
-``-n - 2*twist_offset`` mod L; for self-pair k the partner equals the
-row itself and the same eigenvector column is reused.)
+with plane_wave[k, r] = (1/sqrt(N_folded)) exp(+i k folded_cell(r))
+exp(+i theta r/L_phys) and ``k_p`` = partner row (``-k`` residue
+under APBC twist). Under this convention F_phys[i, j] = sum_alpha
+A_up[i, alpha] A_down[j, alpha] reproduces H-wave's ``greenone.dat``
+element-wise, both spins, for arbitrary SubShape (verified to 1e-14
+for the SubShape=[2,1,1] APBC L=8 fixture).
 
-This convention satisfies F_phys[i, j] = A_up[i, alpha] * A_down[j, alpha]
-summed over occupied pairs, so the density check
-G^sigma_{ij} = sum_alpha conj(A^sigma_{i, alpha}) A^sigma_{j, alpha}
-matches H-wave's physical Green function from ``_save_greenone``
-(`G_phys = e^{+i theta (r_i - r_j) / L} G_tilde`).
+Historical note: the v2 initial draft used negative-Bloch signs on
+both exponents. That formulation was numerically indistinguishable
+from positive-Bloch for SubShape=[1,1,1] because the summed (k, -k)
+pair symmetrises the plane wave, so v1 physical UHF SCF outputs match
+either convention. For SubShape > 1 the folded eigenvector carries a
+non-trivial sub_offset envelope and only the positive-Bloch form
+above reproduces H-wave's ``_deflate_green`` storage.
 """
 from __future__ import annotations
 
 import numpy as np
 
 from .partner_index import find_partner_rows
-
-
-def _phys_phase_up(site_positions, theta, L):
-    """e^{-i sum_d theta_d r_d / L_d} per site (NEGATIVE exponent), shape (Ns,)."""
-    arg = -np.einsum("d,id->i", theta / L, site_positions)
-    return np.exp(1j * arg)
-
-
-def _phys_phase_down(site_positions, theta, L):
-    """e^{+i sum_d theta_d r_d / L_d} per site (POSITIVE exponent), shape (Ns,).
-
-    A^down carries the time-reversal partner's negative-Bloch factor
-    exp(-i k_phys' r_j) = exp(+i k_phys r_j) = exp(+i (tilde_k + theta/L) r_j).
-    The tilde_k part lives in plane_wave_down; this helper supplies the
-    theta/L part with the matching POSITIVE sign.
-    """
-    arg = np.einsum("d,id->i", theta / L, site_positions)
-    return np.exp(1j * arg)
 
 
 def build_amplitudes(
@@ -58,18 +54,32 @@ def build_amplitudes(
     norb_orig,
     theta,
     L,
+    *,
+    cell_shape=None,
+    subshape=None,
 ):
     """Build the physical-basis A^up, A^down occupied-orbital matrices.
 
     Returns
     -------
-    A_up, A_down : (Ns, N_occ) complex arrays
+    A_up, A_down : (Ns_phys, N_occ) complex arrays
         Each column is one occupied pair alpha(k, n) built from the
         physical-basis eigenstates. ``A_up @ A_down.T`` yields F_phys.
 
     The down orbital column index aligns with the up column index via the
     (k, -k) partner lookup; for self-pair k the partner equals the up's
     own row.
+
+    Sublattice support (v2 spec §3.3)
+    --------------------------------
+    When ``cell_shape`` and ``subshape`` are supplied and ``SubShape >
+    [1, 1, 1]``, H-wave's eigenvectors live on the folded BZ of size
+    ``nvol_folded = prod(cell_shape // subshape)``. Each physical site
+    maps to a ``(folded_cell, sub_offset)`` pair via
+    ``sublattice_unfold.decode_physical_site``, and the up / down row
+    within the folded ``nd = 2 * norb_folded`` block depends on the
+    folded orbital (Codex finding 1). Passing ``cell_shape=None``
+    reproduces v1 behaviour with ``SubShape = [1, 1, 1]``.
 
     Raises
     ------
@@ -78,6 +88,9 @@ def build_amplitudes(
         with the actual occupied down set (Codex finding 3: in magnetic
         UHF or spin-dependent fillings, the up-and-down occupied sets
         need not coincide through the time-reversal partner map).
+    ValueError
+        If ``subshape`` does not divide ``cell_shape`` in every direction
+        (v2 fail-fast).
     """
     wavevector_index = np.asarray(wavevector_index, dtype=np.int64)
     eigenvector = np.asarray(eigenvector, dtype=np.complex128)
@@ -88,26 +101,43 @@ def build_amplitudes(
     theta = np.asarray(theta, dtype=np.float64)
     L = np.asarray(L, dtype=np.int64)
 
+    if cell_shape is None:
+        # v1 fallback: SubShape=[1,1,1], L is already CellShape
+        cell_shape = np.asarray(L, dtype=np.int64)
+        subshape = np.array([1, 1, 1], dtype=np.int64)
+    else:
+        cell_shape = np.asarray(cell_shape, dtype=np.int64)
+        subshape = np.asarray(subshape, dtype=np.int64)
+    if not np.all(cell_shape % subshape == 0):
+        raise ValueError(
+            f"SubShape {subshape.tolist()} does not divide "
+            f"CellShape {cell_shape.tolist()} in every direction"
+        )
+    subvol = int(np.prod(subshape))
+    norb_folded = int(norb_orig) * subvol
+
     nvol, nd = stepped_occupation.shape
-    Ns = site_positions.shape[0]
+    Ns_phys = site_positions.shape[0]
     if norb_orig != 1:
         raise NotImplementedError(
-            "v1 spec section 7 restricts to norb_orig == 1; got "
-            f"{norb_orig}. Multi-orbital is a v2 extension."
+            "v2 spec section 7 restricts to norb_orig == 1; got "
+            f"{norb_orig}. Multi-orbital is a v3 extension."
         )
 
     partner_rows, is_self_pair = find_partner_rows(wavevector_index, theta, L)
 
-    k_per_row = 2.0 * np.pi * wavevector_index.astype(np.float64) / L
-    # Negative-Bloch convention matching H-wave's np.fft.fftn(norm='forward'):
-    # k -> r kernel is exp(-i k r), so the real-space eigenstate at momentum k
-    # carries exp(-i k r) (Codex finding 1).
-    plane_wave_up = np.exp(-1j * np.einsum("kd,id->ki", k_per_row, site_positions))
-    plane_wave_down = np.conj(plane_wave_up)  # exp(+i tilde_k r) for partner k' = -k
-    phys_up = _phys_phase_up(site_positions, theta, L)
-    phys_down = _phys_phase_down(site_positions, theta, L)
+    from .sublattice_unfold import unfold_amplitude_columns
 
-    sqrt_Nk = np.sqrt(float(nvol))
+    plane_wave_up, plane_wave_down, row_up_per_site, row_down_per_site = (
+        unfold_amplitude_columns(
+            folded_wavevector_index=wavevector_index,
+            cell_shape=cell_shape,
+            subshape=subshape,
+            site_positions=site_positions.astype(np.int64),
+            norb_orig=norb_orig,
+            theta=theta,
+        )
+    )
 
     up_cols = np.where(column_spin == 0)[0]
     down_cols = np.where(column_spin == 1)[0]
@@ -117,53 +147,68 @@ def build_amplitudes(
             "blocks; got column_spin = " + str(column_spin.tolist())
         )
 
-    # Pair-closure validation (Codex finding 3): the (k, -k) construction
-    # assumes every occupied up state has its time-reversal partner occupied
-    # on the down side, and vice versa. Magnetic UHF or asymmetric fillings
-    # break this. Refuse rather than silently produce the wrong Slater state.
-    occ_up_rows = set()
-    occ_down_rows = set()
+    # Codex finding 2 (v2 sublattice): pair-closure over (k_row, local_band).
+    # local_band = position of a column within its spin block. In v1
+    # single-orbital cases norb_folded == 1 so local_band was always 0
+    # and the tuple check reduced to the row-only check.
+    up_cols_list = list(up_cols)
+    down_cols_list = list(down_cols)
+    up_col_to_local = {int(c): idx for idx, c in enumerate(up_cols_list)}
+    down_col_to_local = {int(c): idx for idx, c in enumerate(down_cols_list)}
+
+    occ_up_kb = set()
+    occ_down_kb = set()
     for n_row in range(nvol):
-        for col_up in up_cols:
-            if stepped_occupation[n_row, col_up] >= 0.5:
-                occ_up_rows.add(n_row)
-                break
-        for col_down in down_cols:
-            if stepped_occupation[n_row, col_down] >= 0.5:
-                occ_down_rows.add(n_row)
-                break
-    partner_of_occ_up = {int(partner_rows[n]) for n in occ_up_rows}
-    if partner_of_occ_up != occ_down_rows:
-        missing_in_down = sorted(partner_of_occ_up - occ_down_rows)
-        extra_in_down = sorted(occ_down_rows - partner_of_occ_up)
+        for col in up_cols_list:
+            if stepped_occupation[n_row, col] >= 0.5:
+                occ_up_kb.add((n_row, up_col_to_local[int(col)]))
+        for col in down_cols_list:
+            if stepped_occupation[n_row, col] >= 0.5:
+                occ_down_kb.add((n_row, down_col_to_local[int(col)]))
+    partner_of_occ_up = {
+        (int(partner_rows[n_row]), local_band)
+        for (n_row, local_band) in occ_up_kb
+    }
+    if partner_of_occ_up != occ_down_kb:
+        missing = sorted(partner_of_occ_up - occ_down_kb)[:10]
+        extra = sorted(occ_down_kb - partner_of_occ_up)[:10]
         raise ValueError(
-            "(k, -k) pair-closure violated: the time-reversal partner of "
-            "the occupied up set does not equal the occupied down set. "
+            "(k, -k) pair-closure violated over (k_row, local_band): "
             f"partner(occ_up) has {len(partner_of_occ_up)} entries, "
-            f"occ_down has {len(occ_down_rows)}; "
-            f"missing in down: {missing_in_down[:10]}; "
-            f"extra in down: {extra_in_down[:10]}. "
-            "v1 bridge requires paramagnetic (k, -k) closure; magnetic / "
-            "asymmetric occupations are not supported."
+            f"occ_down has {len(occ_down_kb)}; missing in down: {missing}; "
+            f"extra in down: {extra}. Sublattice + Sz-fixed requires the "
+            "time-reversal partner of every occupied up local band to "
+            "coincide with the same local band on the down side."
         )
 
     A_up_list = []
     A_down_list = []
     for n_row in range(nvol):
-        for col_up in up_cols:
+        for col_up_idx, col_up in enumerate(up_cols_list):
             if stepped_occupation[n_row, col_up] < 0.5:
                 continue
             partner_n = int(partner_rows[n_row])
-            u_amp_up = eigenvector[n_row, 0, col_up]
-            col_down = down_cols[0]
-            u_amp_down = eigenvector[partner_n, 1, col_down]
-
-            A_up_list.append(
-                (1.0 / sqrt_Nk) * plane_wave_up[n_row] * u_amp_up * phys_up
-            )
-            A_down_list.append(
-                (1.0 / sqrt_Nk) * plane_wave_down[n_row] * u_amp_down * phys_down
-            )
+            # pair up_col_local with down_col at the SAME local_band index
+            # (spec §3.3.1 Codex finding 2).
+            col_down = down_cols_list[col_up_idx]
+            a_up = np.empty(Ns_phys, dtype=np.complex128)
+            a_down = np.empty(Ns_phys, dtype=np.complex128)
+            # v2.1: A_down uses plane_wave AT THE PARTNER row (not
+            # ``n_row``). Under the positive-Bloch spec §3.3 convention,
+            # ``plane_wave_up[k, i] = v[k, s(i), l] * exp(+i k_folded
+            # R(i)) * exp(+i theta r/L) / sqrt(N_folded)`` is exactly
+            # the physical Bloch amplitude at row ``k``, so the down
+            # partner at ``(-k)`` uses ``plane_wave_up[partner_n, i]``
+            # combined with the partner-row eigenvector column.
+            for i in range(Ns_phys):
+                a_up[i] = plane_wave_up[n_row, i] * eigenvector[
+                    n_row, row_up_per_site[i], col_up
+                ]
+                a_down[i] = plane_wave_down[partner_n, i] * eigenvector[
+                    partner_n, row_down_per_site[i], col_down
+                ]
+            A_up_list.append(a_up)
+            A_down_list.append(a_down)
 
     if not A_up_list:
         raise ValueError("no occupied up-spin states found")
@@ -176,9 +221,10 @@ def build_amplitudes(
 def build_fij_phys(A_up, A_down):
     """Return F^phys_{ij} = (A_up @ A_down.T)_{ij}, shape (Ns, Ns) complex.
 
-    F is built from c^dag c^dag coefficients, both of which are
-    pre-conjugated by the (k, -k) negative-Bloch construction. The result
-    has translation-invariant ``(r_j - r_i)`` structure (Codex finding 1).
+    F is built from ``c^dag_i↑ c^dag_j↓`` pair coefficients under the
+    v2.1 positive-Bloch construction (module docstring). For a
+    translation-invariant Slater state on the unfolded lattice the
+    result depends only on the physical displacement ``r_j - r_i``.
     """
     A_up = np.asarray(A_up, dtype=np.complex128)
     A_down = np.asarray(A_down, dtype=np.complex128)

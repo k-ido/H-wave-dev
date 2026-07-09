@@ -8,20 +8,32 @@ into an mVMC ``InOrbital`` / ``InOrbitalAntiParallel`` initial wave
 function file (``zqp_orbital_uhfk.dat``), so that mVMC's PairProduct
 state can be initialized from the H-wave Slater determinant.
 
-Scope (v1):
+Scope (v2):
 
-- Single orbital (``norb_orig = 1``, ``SubShape = [1, 1, 1]``).
+- Single orbital (``norb_orig = 1``). Sublattice folding is supported
+  for arbitrary ``SubShape`` that divides ``CellShape`` in every
+  direction; ``SubShape`` unspecified defaults to ``CellShape`` (i.e.
+  fully folded), matching ``uhfk.py:_init_lattice``.
 - Sz-fixed UHF only (``2Sz = 0`` with ``N_up = N_down``).
 - PBC and APBC both supported deterministically. The bridge uses the
-  negative-Bloch convention so the per-spin density reconstruction
-  matches H-wave's ``np.fft.fftn(norm='forward')`` k-to-r kernel under
-  both boundary conditions.
-- AntiParallel pair form only. Magnetic / asymmetric occupations that
-  violate (k, -k) pair-closure are rejected with a clear error.
+  positive-Bloch amplitude convention consistent with H-wave's
+  negative-gauge APBC transformation (``tilde_c_r =
+  exp(-i theta r / L_phys) c_r``) plus the tilde-side positive-Bloch
+  Fourier ``c_R = (1/sqrt(N_folded)) sum_k c_k exp(+i k R)`` implied by
+  ``np.fft.ifftn(..., norm='forward')`` on the Hamiltonian side. For
+  ``SubShape = [1, 1, 1]`` the (k, -k) time-reversal pair sum
+  symmetrises the plane-wave factor and the numerical density is
+  independent of the sign choice; for ``SubShape > [1, 1, 1]`` only the
+  positive-Bloch form here reproduces H-wave's ``greenone.dat`` (verified
+  to 1e-14 for the SubShape=[2,1,1] APBC L=8 fixture).
+- AntiParallel pair form only with (k, -k) time-reversal pairing.
+  Magnetic / spin-dependent occupations that violate pair-closure over
+  ``(k_row, local_band)`` are rejected with a clear error at
+  ``build_amplitudes`` entry.
 - T=0 Slater projection; finite-T SCF with fractional occupations near
   the Fermi level is rejected (rerun with smaller ``T``).
 - Aggregated ``params[idx]`` carry a small uniform rank-lift noise
-  (default amplitude ``1e-6``, ``--epsilon-noise`` to override) so that
+  (default amplitude ``1e-8``, ``--epsilon-noise`` to override) so that
   mVMC's Pfaffian Slater evaluation does not become singular when F is
   built from a single (k, -k) shell. The noise is complex for
   ``ComplexType 1`` orbitalidx and real-only for ``ComplexType 0``.

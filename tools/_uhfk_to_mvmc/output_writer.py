@@ -12,9 +12,11 @@ when F is built from a single (k, -k) shell.
 The noise step mirrors ComplexUHF's own `OutputAntiParallel_2`
 (`output.c:274`), which adds `genrand_real2() * pow(10, -eps_int_slater)`
 to each averaged ParamOrbital entry for exactly the same reason. The
-bridge's default amplitude `1e-6` matches the empirical sweet spot
-where the case_apbc Ne=4 (rank-2) E2E reproduces UHF energy within
-0.02% rel without significantly perturbing the physics.
+bridge's default amplitude ``1e-8`` (see ``aggregate_orbital_params``
+default and CLI ``--epsilon-noise`` help) sits in the stable plateau
+``epsilon_noise <= 1e-7`` where the case_apbc Ne=4 (rank-2) E2E
+reproduces UHF energy within ~1 VMC stderr at NVMCSample=10000
+without significantly perturbing the physics.
 """
 from __future__ import annotations
 

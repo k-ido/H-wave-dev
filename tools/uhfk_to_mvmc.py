@@ -86,13 +86,17 @@ def main(argv=None):
               file=sys.stderr)
         return 2
 
-    if list(sub_shape) != [1, 1, 1]:
+    cell_shape_arr = np.array(cell_shape, dtype=np.int64)
+    subshape_arr = np.array(sub_shape, dtype=np.int64)
+    if np.any(cell_shape_arr % subshape_arr != 0):
         print(
-            f"ERROR: SubShape = {sub_shape} not in v1 scope; "
-            "v1 spec section 7 requires SubShape == [1, 1, 1]",
+            f"ERROR: SubShape = {sub_shape} does not divide "
+            f"CellShape = {cell_shape} in every direction",
             file=sys.stderr,
         )
         return 2
+    L_folded_arr = cell_shape_arr // subshape_arr
+    subvol = int(np.prod(subshape_arr))
 
     ne_per_group = derive_ne_per_group(toml_param)
     if ne_per_group[0] != ne_per_group[1]:
@@ -109,7 +113,10 @@ def main(argv=None):
         for b in boundary
     ], dtype=np.float64)
     has_apbc = bool(np.any(theta > 0))
-    L = np.array(cell_shape, dtype=np.int64)
+    # L passed to build_amplitudes / partner_index is the folded lattice
+    # size (partner rows are computed on the folded BZ). CellShape is
+    # preserved separately for the unfold path (spec §3.3).
+    L = L_folded_arr
 
     eigen = np.load(args.eigen, allow_pickle=False)
     eigenvalue = eigen["eigenvalue"]
@@ -144,6 +151,22 @@ def main(argv=None):
         print(
             f"ERROR: geometry has {Ns} sites but CellShape implies "
             f"{int(np.prod(cell_shape))} (v1 single orbital)",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Codex finding 4 (v2): eigen.npz must match the folded BZ shape
+    # derived from CellShape / SubShape. If a caller passes a stale
+    # SubShape that disagrees with H-wave's actual fold, refuse before
+    # building amplitudes.
+    nd_expected = 2 * norb_orig * subvol
+    nvol_folded_expected = int(np.prod(L_folded_arr))
+    if eigenvector.shape != (nvol_folded_expected, nd_expected, nd_expected):
+        print(
+            f"ERROR: eigen.npz eigenvector shape {eigenvector.shape} does "
+            f"not match expected (nvol_folded={nvol_folded_expected}, "
+            f"nd={nd_expected}, nd={nd_expected}) derived from "
+            f"CellShape={cell_shape} and SubShape={sub_shape}",
             file=sys.stderr,
         )
         return 2
@@ -195,7 +218,9 @@ def main(argv=None):
         site_positions=site_R_int,
         norb_orig=norb_orig,
         theta=theta,
-        L=L,
+        L=L,  # L_folded (partner_rows lives on folded BZ)
+        cell_shape=cell_shape_arr,
+        subshape=subshape_arr,
     )
     F_phys = build_fij_phys(A_up, A_down)
 
