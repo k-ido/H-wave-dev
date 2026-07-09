@@ -220,3 +220,119 @@ def test_cli_failure_leaves_no_output_artifact():
             "validation rejected the inputs; see Codex finding 2 "
             f"(stderr: {result.stderr!r})"
         )
+
+
+def test_general_path_rejects_ncond_odd():
+    """CLI rejects odd Ncond with clear message when routed to General.
+
+    ``derive_ne_per_group`` requires ``(Ncond +/- 2Sz)`` to be even, so
+    the plan's "no 2Sz" wording is expressed here as ``2Sz = 1`` (odd)
+    which yields integer ``Ne_up = 2``, ``Ne_down = 1`` and still routes
+    to the General branch (``is_antiparallel_metadata`` needs ``2Sz==0``).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = _write_minimal_inputs(tmp, subshape=(1, 1, 1))
+        # Overwrite input.toml with odd Ncond; 2Sz=1 keeps Ne_up/Ne_down
+        # integer while disabling the antiparallel dispatch flag.
+        with open(paths["input"], "w") as fp:
+            fp.write(
+                "[mode.param]\n"
+                "Ncond = 3\n"
+                "2Sz = 1\n"
+                "T = 0.0\n"
+                "CellShape = [4, 1, 1]\n"
+                "SubShape  = [1, 1, 1]\n"
+                'BoundaryCondition = ["periodic", "periodic", "periodic"]\n'
+            )
+        # Replace eigen.npz with non-degenerate eigenvalues so
+        # step_occupation's Fermi-level degeneracy guard does not fire
+        # before validate_general_prerequisites gets to reject odd Ncond.
+        np.savez(
+            paths["eigen"],
+            eigenvalue=np.array(
+                [[-2.0, -1.5], [-0.5, 0.0], [0.5, 1.0], [1.5, 2.0]],
+                dtype=np.float64,
+            ),
+            eigenvector=np.zeros((4, 2, 2), dtype=np.complex128),
+            wavevector_unit=np.eye(3, dtype=np.float64),
+            wavevector_index=np.array(
+                [[v, 0, 0] for v in [0, 1, -2, -1]], dtype=np.int64
+            ),
+            twist_offset=np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        )
+        # Overwrite orbitalidx.def with 6-column General format.
+        with open(paths["orbitalidx"], "w") as fp:
+            nsite = 4
+            total = 2 * nsite * nsite - nsite
+            fp.write("======================\n")
+            fp.write(f"NOrbitalIdx  {total}\n")
+            fp.write("ComplexType 1\n")
+            fp.write("======================\n")
+            fp.write("== i_spn_j_spn_OrbitalIdx ==\n")
+            fp.write("======================\n")
+            idx = 0
+            for all_i in range(2 * nsite):
+                for all_j in range(all_i + 1, 2 * nsite):
+                    i, spn_i = all_i % nsite, all_i // nsite
+                    j, spn_j = all_j % nsite, all_j // nsite
+                    fp.write(f"{i} {spn_i} {j} {spn_j} {idx} 1\n")
+                    idx += 1
+            for k in range(total):
+                fp.write(f"{k} 1\n")
+        result = subprocess.run(
+            [sys.executable, "tools/uhfk_to_mvmc.py",
+             "--input", paths["input"], "--eigen", paths["eigen"],
+             "--occupation", paths["occupation"],
+             "--geometry", paths["geometry"],
+             "--orbitalidx", paths["orbitalidx"],
+             "--output", paths["output"],
+             "--no-check-density"],
+            capture_output=True, text=True, cwd=REPO_ROOT,
+        )
+        assert result.returncode != 0
+        assert "odd" in result.stderr or "even" in result.stderr
+
+
+def test_general_path_rejects_mixed_block_column_spin():
+    """column_spin == -1 (mixed block, C case) is rejected in General."""
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = _write_minimal_inputs(tmp, subshape=(1, 1, 1))
+        np.savez(
+            paths["occupation"],
+            occupation=np.zeros((4, 2), dtype=np.float64),
+            mu=np.array([0.0], dtype=np.float64),
+            T=np.float64(0.0),
+            column_spin=np.array([-1, -1], dtype=np.int64),
+            column_mu_group=np.array([0, 0], dtype=np.int64),
+        )
+        # Point orbitalidx.def to 6-column so dispatch enters General branch.
+        with open(paths["orbitalidx"], "w") as fp:
+            nsite = 4
+            total = 2 * nsite * nsite - nsite
+            fp.write("======================\n")
+            fp.write(f"NOrbitalIdx  {total}\n")
+            fp.write("ComplexType 1\n")
+            fp.write("======================\n")
+            fp.write("== i_spn_j_spn_OrbitalIdx ==\n")
+            fp.write("======================\n")
+            idx = 0
+            for all_i in range(2 * nsite):
+                for all_j in range(all_i + 1, 2 * nsite):
+                    i, spn_i = all_i % nsite, all_i // nsite
+                    j, spn_j = all_j % nsite, all_j // nsite
+                    fp.write(f"{i} {spn_i} {j} {spn_j} {idx} 1\n")
+                    idx += 1
+            for k in range(total):
+                fp.write(f"{k} 1\n")
+        result = subprocess.run(
+            [sys.executable, "tools/uhfk_to_mvmc.py",
+             "--input", paths["input"], "--eigen", paths["eigen"],
+             "--occupation", paths["occupation"],
+             "--geometry", paths["geometry"],
+             "--orbitalidx", paths["orbitalidx"],
+             "--output", paths["output"],
+             "--no-check-density"],
+            capture_output=True, text=True, cwd=REPO_ROOT,
+        )
+        assert result.returncode != 0
+        assert "mixed block" in result.stderr

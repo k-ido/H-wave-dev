@@ -47,6 +47,14 @@ main()
 [[ -f "${HWAVE_WORK}/output/greenone.dat" ]]
 echo "  H-wave UHFk SCF: ${HWAVE_WORK}/output/*"
 
+# ---- step 1.5: harness-gate — assert target occupation per case ----
+if grep -qE "case_(pbc_sz2|zeeman_sz_free)" <<< "${CASE}"; then
+  python3 "${HERE}/scripts/assert_occupation.py" "${CASE_DIR}" "${HWAVE_WORK}" || {
+    echo "harness-gate: occupation assertion failed for ${CASE}" >&2
+    exit 1
+  }
+fi
+
 # ---- step 2: vmcdry to produce mVMC .def files ----
 MVMC_WORK="${WORK}/mvmc"
 mkdir -p "${MVMC_WORK}"
@@ -62,6 +70,11 @@ cd "${MVMC_WORK}"
 # real+imag in APBC; mVMC accepts both interchangeably under
 # ComplexType=1.
 sed -i -E 's/^ComplexType +0/ComplexType 1/' orbitalidx.def
+# v3 A/B cases: StdFace's FermionHubbard also emits orbitalidxgen.def
+# (6-column General) when 2Sz != 0. Flip its ComplexType too.
+if [[ -f orbitalidxgen.def ]]; then
+  sed -i -E 's/^ComplexType +0/ComplexType 1/' orbitalidxgen.def
+fi
 echo "  vmcdry.out: ${MVMC_WORK}/{namelist,modpara,orbitalidx,trans,coulombintra,...}.def"
 
 # ---- step 3: bridge ----
@@ -71,13 +84,23 @@ echo "  vmcdry.out: ${MVMC_WORK}/{namelist,modpara,orbitalidx,trans,coulombintra
 #     EPSILON_NOISE=1e-7 ./run.sh case_apbc
 EPSILON_NOISE="${EPSILON_NOISE:-1.0e-8}"
 RNG_SEED="${RNG_SEED:-7919}"
+
+# v3 A/B routing: if StdFace produced orbitalidxgen.def (fires when
+# 2Sz != 0 or lGC=1), prefer it and route the bridge through the
+# General path. Otherwise stay on the v1/v2 AntiParallel-only path.
+if [[ -f "${MVMC_WORK}/orbitalidxgen.def" ]]; then
+  BRIDGE_ORBITALIDX="${MVMC_WORK}/orbitalidxgen.def"
+else
+  BRIDGE_ORBITALIDX="${MVMC_WORK}/orbitalidx.def"
+fi
+
 cd "${ROOT}"
 python3 tools/uhfk_to_mvmc.py \
     --input        "${HWAVE_WORK}/input.toml" \
     --eigen        "${HWAVE_WORK}/output/eigen.npz" \
     --occupation   "${HWAVE_WORK}/output/occupation.npz" \
     --geometry     "${HWAVE_WORK}/geometry_uhf.dat" \
-    --orbitalidx   "${MVMC_WORK}/orbitalidx.def" \
+    --orbitalidx   "${BRIDGE_ORBITALIDX}" \
     --output       "${MVMC_WORK}/zqp_orbital_uhfk.dat" \
     --check-density \
     --onebodyg-uhf "${HWAVE_WORK}/output/greenone.dat" \
@@ -85,12 +108,29 @@ python3 tools/uhfk_to_mvmc.py \
     --rng-seed "${RNG_SEED}"
 echo "  bridge wrote: ${MVMC_WORK}/zqp_orbital_uhfk.dat (density check OK, epsilon=${EPSILON_NOISE})"
 
-# ---- step 4: register InOrbital in namelist.def ----
+# ---- step 4: register InOrbital(General) in namelist.def ----
 NAMELIST="${MVMC_WORK}/namelist.def"
-# Remove any prior entry for InOrbital* lines, then append the bridge file.
+# Remove any prior entry for InOrbital* lines, then append the bridge file
+# under the appropriate keyword.
 sed -i '/^InOrbital/d' "${NAMELIST}"
 sed -i '/^InOrbitalAntiParallel/d' "${NAMELIST}"
-echo "InOrbital ${MVMC_WORK}/zqp_orbital_uhfk.dat" >> "${NAMELIST}"
+sed -i '/^InOrbitalGeneral/d' "${NAMELIST}"
+if [[ "${BRIDGE_ORBITALIDX}" == *orbitalidxgen.def ]]; then
+  # v3 General path: tell mVMC to consume the 6-column class table and
+  # bridge params via InOrbitalGeneral. Uncomment the commented
+  # "OrbitalGeneral" line StdFace emitted and comment the AntiParallel
+  # "Orbital" line so mVMC does NOT try to parse orbitalidx.def as the
+  # main pair table.
+  sed -i -E 's|^# OrbitalGeneral|  OrbitalGeneral|' "${NAMELIST}"
+  sed -i -E 's|^         Orbital  |#        Orbital  |' "${NAMELIST}"
+  # StdFace also emits OrbitalParallel orbitalidxpara.def for 2Sz != 0
+  # (grand-canonical-style triplet pair). mVMC rejects when more than one
+  # OrbitalX* keyword is active alongside OrbitalGeneral, so comment it.
+  sed -i -E 's|^ OrbitalParallel|# OrbitalParallel|' "${NAMELIST}"
+  echo "InOrbitalGeneral ${MVMC_WORK}/zqp_orbital_uhfk.dat" >> "${NAMELIST}"
+else
+  echo "InOrbital ${MVMC_WORK}/zqp_orbital_uhfk.dat" >> "${NAMELIST}"
+fi
 # Disable Gutzwiller / Jastrow / GeneralRBM projection lines: the bridge
 # produces a pure Slater initial WF, and StdFace defaults to nonzero
 # projection parameters that would multiply the Slater by a non-trivial

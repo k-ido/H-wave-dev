@@ -66,3 +66,36 @@ def compare_against_onebodyg_uhf(
             f"{len(diffs)} (i, s, j, t) entries differ beyond tol={tol}; "
             f"first 3: {head}"
         )
+
+
+def compare_against_onebodyg_uhf_general(
+    G_all: np.ndarray, onebodyg_uhf_path: str, tol: float = 1e-10
+) -> None:
+    """Compare bridge-built 2Ns × 2Ns G against H-wave's greenone.dat
+    for the General path (spec §4.5).
+
+    G_all[iσ, jσ'] = <c^†_{i,σ} c_{j,σ'}> in the physical basis with
+    ``all_i = i + σ * Nsite``. greenone.dat lines are ``i s j t re im``;
+    for the v3 A+B scope, s != t entries should be zero within `tol`
+    (mixed-block scope-violation guard). s == t entries compare to
+    G_all[i + s*Ns, j + t*Ns] element-wise.
+    """
+    G_all = np.asarray(G_all, dtype=np.complex128)
+    two_ns = G_all.shape[0]
+    assert two_ns % 2 == 0, "G_all must have even row count"
+    Ns = two_ns // 2
+
+    entries = parse_uhf_cisajs_dat(onebodyg_uhf_path)
+    diffs = []
+    for (i, s, j, t, v_uhf) in entries:
+        all_i = i + s * Ns
+        all_j = j + t * Ns
+        v_bridge = complex(G_all[all_i, all_j])
+        if abs(v_bridge - v_uhf) > tol:
+            diffs.append((i, s, j, t, v_bridge, v_uhf))
+    if diffs:
+        head = diffs[:3]
+        raise DensityMismatchError(
+            f"{len(diffs)} (i, s, j, t) entries differ beyond tol={tol}; "
+            f"first 3: {head}"
+        )

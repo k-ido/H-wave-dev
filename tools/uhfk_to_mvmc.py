@@ -35,6 +35,14 @@ from tools._uhfk_to_mvmc.density_check import (
 )
 
 
+def _column_spin_to_mu_group_is_bijective(column_spin, column_mu_group):
+    """True iff column_spin=0 cols share one mu_group and column_spin=1
+    cols share a different mu_group (bijective spin<->mu_group)."""
+    ups = set(int(g) for g, s in zip(column_mu_group, column_spin) if int(s) == 0)
+    downs = set(int(g) for g, s in zip(column_mu_group, column_spin) if int(s) == 1)
+    return len(ups) == 1 and len(downs) == 1 and ups.isdisjoint(downs)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="H-wave UHFk → mVMC PairProduct bridge"
@@ -99,14 +107,9 @@ def main(argv=None):
     subvol = int(np.prod(subshape_arr))
 
     ne_per_group = derive_ne_per_group(toml_param)
-    if ne_per_group[0] != ne_per_group[1]:
-        print(
-            f"ERROR: N_up = {ne_per_group[0]} != N_down = "
-            f"{ne_per_group[1]}; v1 spec section 7 requires AntiParallel "
-            "Sz-fixed sector",
-            file=sys.stderr,
-        )
-        return 2
+    # v3: N_up != N_down is legal for the General path (2Sz>0 A case).
+    # The strict AntiParallel check is deferred to the AntiParallel
+    # branch below so the General dispatch can service Sz-imbalanced UHF.
 
     theta = np.array([
         np.pi if b.lower() in {"ap", "antiperiodic"} else 0.0
@@ -129,10 +132,211 @@ def main(argv=None):
     column_mu_group = occ["column_mu_group"]
     T_scf = float(occ["T"])
 
-    if np.any(column_spin < 0):
+    # v3 dispatch (spec §5.3): format-first + is_antiparallel_metadata tuple.
+    from tools._uhfk_to_mvmc.orbitalidx_general_reader import (
+        detect_orbitalidx_format,
+        parse_orbitalidx_general_def,
+        OrbitalidxFormatError as OrbitalidxGeneralFormatError,
+    )
+    from tools._uhfk_to_mvmc.general_fij_builder import (
+        build_fij_general,
+        build_pair_list,
+        build_slater_orbitals,
+        compute_canonical_reps,
+        validate_general_prerequisites,
+    )
+    from tools._uhfk_to_mvmc.general_output_writer import (
+        aggregate_general_orbital_params,
+        write_zqp_orbital_general,
+    )
+    from tools._uhfk_to_mvmc.density_check import (
+        compare_against_onebodyg_uhf_general,
+    )
+    from tools._uhfk_to_mvmc.partner_index import find_partner_rows
+
+    try:
+        orbitalidx_format = detect_orbitalidx_format(args.orbitalidx)
+    except OrbitalidxGeneralFormatError as e:
+        print(f"ERROR (orbitalidx): {e}", file=sys.stderr)
+        return 2
+    two_sz_raw = toml_param.get("2Sz")
+    is_antiparallel_metadata = (
+        two_sz_raw is not None
+        and int(two_sz_raw) == 0
+        and bool(np.all(column_spin >= 0))
+        and set(np.unique(column_spin).tolist()) <= {0, 1}
+        and len(np.unique(column_mu_group)) == 2
+        and _column_spin_to_mu_group_is_bijective(column_spin, column_mu_group)
+    )
+
+    if is_antiparallel_metadata and orbitalidx_format == "antiparallel":
+        # Fall through to the legacy v2.1 path below (unchanged). The
+        # v1 spec §7 AntiParallel Sz-fixed sector constraint is enforced
+        # here (it was pre-dispatch before v3 dispatch was introduced).
+        if ne_per_group[0] != ne_per_group[1]:
+            print(
+                f"ERROR: N_up = {ne_per_group[0]} != N_down = "
+                f"{ne_per_group[1]}; v1 spec section 7 requires "
+                "AntiParallel Sz-fixed sector",
+                file=sys.stderr,
+            )
+            return 2
+    elif orbitalidx_format == "general":
+        # v3 General path (also serves the forced-General branch when
+        # is_antiparallel_metadata is True).
+        _, site_R_int, norb = load_geometry_uhf(args.geometry)
+        if norb != 1:
+            print(
+                f"ERROR: geometry has norb={norb} orbitals per cell; "
+                "v3 general path requires single-orbital (norb_orig == 1)",
+                file=sys.stderr,
+            )
+            return 2
+        Ns = site_R_int.shape[0]
+        if Ns != int(np.prod(cell_shape)):
+            print(
+                f"ERROR: geometry has {Ns} sites but CellShape implies "
+                f"{int(np.prod(cell_shape))} (v3 single orbital)",
+                file=sys.stderr,
+            )
+            return 2
+        norb_orig = 1
+        nd_expected = 2 * norb_orig * subvol
+        nvol_folded_expected = int(np.prod(L_folded_arr))
+        if eigenvector.shape != (
+            nvol_folded_expected, nd_expected, nd_expected
+        ):
+            print(
+                f"ERROR: eigen.npz eigenvector shape {eigenvector.shape} "
+                f"does not match expected (nvol_folded="
+                f"{nvol_folded_expected}, nd={nd_expected}, "
+                f"nd={nd_expected}) derived from CellShape={cell_shape} "
+                f"and SubShape={sub_shape}",
+                file=sys.stderr,
+            )
+            return 2
+        # v3 General path: derive ne_per_group from the actual
+        # column_mu_group shape rather than from the input toml's
+        # Ncond/2Sz splitting. Rationale: under H-wave Sz-free
+        # (no 2Sz key), the SCF uses a single global chemical potential,
+        # so column_mu_group has only one unique value. The AntiParallel
+        # derivation ``[N_up, N_down] = [(Ncond+2Sz)/2, (Ncond-2Sz)/2]``
+        # would fabricate a non-existent mu-group 1 and trip
+        # ``step_occupation``'s "mu-group N has no eigenvector columns"
+        # guard. For a single-group Sz-free case the semantically
+        # correct target is ``[Ncond]`` (single group, fill lowest Ncond
+        # eigenvalues regardless of spin).
+        n_mu_groups = int(len(np.unique(column_mu_group)))
+        if n_mu_groups == 1:
+            ne_per_group_general = [int(toml_param["Ncond"])]
+        else:
+            ne_per_group_general = ne_per_group
+        try:
+            stepped_occupation, _ = step_occupation(
+                occupation, eigenvalue, column_spin, column_mu_group,
+                T_scf, ne_per_group_general,
+            )
+        except OccupationGuardError as e:
+            print(f"ERROR (occupation guard): {e}", file=sys.stderr)
+            return 2
+        partner_rows, _ = find_partner_rows(wavevector_index, theta, L)
+        try:
+            validate_general_prerequisites(
+                Ncond=int(toml_param["Ncond"]),
+                stepped_occupation=stepped_occupation,
+                column_spin=column_spin,
+                partner_rows=partner_rows,
+                wavevector_index=wavevector_index,
+            )
+        except ValueError as e:
+            print(f"ERROR (general prerequisites): {e}", file=sys.stderr)
+            return 2
+        try:
+            info_general = parse_orbitalidx_general_def(args.orbitalidx)
+        except OrbitalidxGeneralFormatError as e:
+            print(f"ERROR (orbitalidx_general): {e}", file=sys.stderr)
+            return 2
+        if info_general["complex_type"] != 1:
+            print(
+                f"ERROR: orbitalidx_general.def ComplexType = "
+                f"{info_general['complex_type']}; bridge writes complex "
+                "Fij values, ComplexType 1 required",
+                file=sys.stderr,
+            )
+            return 2
+        if info_general["nsite"] != Ns:
+            print(
+                f"ERROR: orbitalidx_general.def nsite = "
+                f"{info_general['nsite']} != geometry nsite = {Ns}",
+                file=sys.stderr,
+            )
+            return 2
+        canonical, _self = compute_canonical_reps(
+            partner_rows, wavevector_index
+        )
+        pair_list = build_pair_list(
+            stepped_occupation, column_spin, canonical, partner_rows,
+        )
+        A = build_slater_orbitals(
+            wavevector_index=wavevector_index,
+            eigenvector=eigenvector,
+            column_spin=column_spin,
+            site_positions=site_R_int.astype(np.int64),
+            cell_shape=cell_shape_arr,
+            subshape=subshape_arr,
+            theta=theta,
+            pair_list=pair_list,
+        )
+        F_general = build_fij_general(A)
+        params = aggregate_general_orbital_params(
+            F_general, info_general["mapping"],
+            info_general["n_orbital_idx"],
+            epsilon_noise=args.epsilon_noise,
+            complex_type=info_general["complex_type"],
+            rng=np.random.default_rng(args.rng_seed),
+        )
+        if args.check_density:
+            if args.onebodyg_uhf is None:
+                print(
+                    "ERROR: --check-density requires --onebodyg-uhf",
+                    file=sys.stderr,
+                )
+                return 2
+            G_all = np.conj(A) @ A.T
+            try:
+                compare_against_onebodyg_uhf_general(
+                    G_all, args.onebodyg_uhf, tol=1e-10,
+                )
+            except DensityMismatchError as e:
+                print(f"ERROR (density check): {e}", file=sys.stderr)
+                return 3
+            print("density check OK (tol 1e-10)")
+        out_path = os.path.abspath(args.output)
+        out_dir = os.path.dirname(out_path) or "."
+        os.makedirs(out_dir, exist_ok=True)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            prefix=".uhfk_to_mvmc.", suffix=".tmp", dir=out_dir,
+        )
+        os.close(tmp_fd)
+        try:
+            write_zqp_orbital_general(tmp_path, params)
+            os.replace(tmp_path, out_path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
         print(
-            "ERROR: occupation.npz has column_spin = -1 (Sz-free / mixed "
-            "block); v1 spec section 7 requires Sz-fixed",
+            f"wrote {args.output} "
+            f"({info_general['n_orbital_idx']} General params)"
+        )
+        return 0
+    else:
+        print(
+            "ERROR: input is Sz-imbalanced or Sz-free (not "
+            "AntiParallel-compatible), but orbitalidx.def is 3- or "
+            "4-column (AntiParallel) format. Please regenerate with "
+            "orbitalidx_general.def (6-column) via StdFace (e.g. "
+            "'OrbitalGeneral 1' in stan.in).",
             file=sys.stderr,
         )
         return 2

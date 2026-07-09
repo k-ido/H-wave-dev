@@ -8,12 +8,24 @@ uhfk_to_mvmc.py — UHFk → mVMC PairProduct ブリッジ
 (``zqp_orbital_uhfk.dat``) に変換するスクリプトである。これにより
 mVMC の PairProduct 状態を H-wave UHF の Slater 行列で初期化できる。
 
-スコープ (v2):
+スコープ (v3):
 
 - 単軌道 (``norb_orig = 1``)。副格子フォールドは ``SubShape`` が各方向で
   ``CellShape`` を割り切る任意の値に対応。``SubShape`` 省略時は
   ``CellShape`` にフォールバック (``uhfk.py:_init_lattice`` と一致)。
-- Sz-fixed UHF のみ (``2Sz = 0`` で ``N_up = N_down``)
+- **Sz-fixed UHF (2Sz = 0)** → AntiParallel path (v1/v2/v2.1 と同じ
+  挙動、``orbitalidx.def`` の 3 or 4 列形式を消費)。
+- **Sz-fixed 2Sz ≠ 0 (A ケース) と Sz-free 非 mixed (B ケース)** →
+  General path (v3、``orbitalidx_general.def`` の 6 列形式を消費)。
+  CLI は ``(is_antiparallel_metadata, orbitalidx_format)`` の組で
+  自動 dispatch する。ユーザは StdFace で ``orbitalidx_general.def``
+  を生成する必要がある (A ケースでは ``stan.in`` の ``2Sz`` を非 0 に
+  設定する)。
+- スピン不均衡 Slater については、canonical ``(k, partner(k))`` ブロック
+  での same-spin excess pair 発行により **同スピン pair 成分**
+  (``F[up, up]``, ``F[down, down]``) をサポートする。
+- Sz-free で mixed block を含む状態 (``column_spin = -1``、SOC /
+  spin-orbital mode) は **v3 スコープ外**、v3.1 で扱う。
 - PBC・APBC とも決定論的にサポート。ブリッジは、H-wave の負号ゲージ
   APBC 変換 (``tilde_c_r = exp(-i theta r / L_phys) c_r``) と、
   ``ifftn(..., norm='forward')`` に対応する tilde 側の正号 Bloch
@@ -24,9 +36,12 @@ mVMC の PairProduct 状態を H-wave UHF の Slater 行列で初期化できる
   では折り畳み固有ベクトルの副格子 envelope が非自明になるため、H-wave
   ``greenone.dat`` と element-wise 一致するのは本規約のみ (SubShape=[2,1,1]
   APBC L=8 fixture で 1e-14 に確認済み)。
-- (k, -k) 時間反転対 AntiParallel のみ。磁性 / spin 依存占有で
-  ``(k_row, local_band)`` pair-closure が満たされない場合は
-  ``build_amplitudes`` 入口で明示的に拒絶する。
+- AntiParallel path: (k, -k) 時間反転対、``(k_row, local_band)`` 上で
+  pair-closure。General path (v3): canonical ``(k, partner(k))``
+  ブロック内で cross + same-spin excess pair を発行。§3.2 の
+  pair-closure 条件 (canonical block の same-spin excess 不整合、
+  self-pair の奇数 excess など) を満たさない占有は
+  ``validate_general_prerequisites`` で明示的に拒絶する。
 - T=0 への Slater 投影。Fermi 準位付近に分数占有が残る有限温度 SCF は拒絶
   (より小さい ``T`` で再計算するよう促す)
 - ``params[idx]`` に微小な一様乱数(default 振幅 ``1e-8``、
@@ -65,8 +80,46 @@ mVMC の PairProduct 状態を H-wave UHF の Slater 行列で初期化できる
            --onebodyg-uhf output/greenone.dat
 
 4. mVMC の ``namelist.def`` に ``InOrbital zqp_orbital_uhfk.dat``
-   (または ``InOrbitalAntiParallel zqp_orbital_uhfk.dat``) を追加すれば、
+   (または ``InOrbitalAntiParallel zqp_orbital_uhfk.dat``、v3 General
+   path なら ``InOrbitalGeneral zqp_orbital_uhfk.dat``) を追加すれば、
    mVMC が PairProduct パラメータを本ファイルで初期化する。
+
+Dispatch (v3)
+^^^^^^^^^^^^^
+
+CLI は ``--orbitalidx`` を先に parse し、
+``(is_antiparallel_metadata, orbitalidx_format)`` の組で経路を選択する:
+
+- ``(True, antiparallel)`` — v2.1 AntiParallel path (v1/v2/v2.1 の
+  挙動そのまま)。
+- ``(True, general)`` — forced-General 分岐。占有集合が v2.1 の
+  ``(k_row, local_band)`` pair-closure を満たしていれば
+  ``F[up, down]`` は 1e-12 で v2.1 の F を再現する。満たしていない
+  (spin canting 由来の up-up excess 等) 場合は WARNING を出しつつ、
+  出力は正しい ``InOrbitalGeneral`` state となる (ただし v2.1 経路
+  では再現不可)。
+- ``(False, general)`` — v3 General path (A + B スコープ)。
+- ``(False, antiparallel)`` — 拒絶。StdFace を非 0 の ``2Sz`` (A) や
+  Zeeman 駆動 Sz-free (B) 設定で回して ``orbitalidx_general.def`` を
+  再生成すること。
+
+``is_antiparallel_metadata`` は ``input.toml`` の ``2Sz`` が明示的に 0、
+``N_up == N_down``、``column_spin ∈ {0, 1}``、``column_mu_group`` の
+unique 数が 2、column_spin と mu_group が bijective であることを **全て**
+満たしたときのみ True になる。
+
+クラス一致性チェック (v3 General)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+General path では ``aggregate_general_orbital_params`` が、
+平均化する **前** に ``orbitalidx_general.def`` の各クラスに割り当てられた
+sign 付き F 成分が ``class_consistency_tol`` (default 1e-8) 以内で
+一致していることを検査する。不一致であれば
+``ClassInconsistencyError`` を offending idx と観測された max residual
+とともに raise する。これにより、StdFace が生成したクラスが仮定する
+対称性を Slater state が守っていないケース (対称なハミルトニアンで
+自発的対称性破れの UHF 基底状態が出るなど) を silent averaging から
+守る。
 
 密度行列チェック (推奨)
 ^^^^^^^^^^^^^^^^^^^^^^^
