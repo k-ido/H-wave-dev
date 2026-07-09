@@ -65,6 +65,89 @@ def test_validate_general_prerequisites_rejects_mixed_block():
         )
 
 
+def test_validate_rejects_mixed_column_spin_when_not_soc_mode():
+    """v3 (is_soc_mode=False): column_spin=-1 still triggers ValueError."""
+    with pytest.raises(ValueError, match="mixed block"):
+        validate_general_prerequisites(
+            Ncond=2,
+            stepped_occupation=np.array([[1.0, 0.0], [0.0, 1.0]]),
+            column_spin=np.array([-1, -1], dtype=np.int64),
+            partner_rows=np.array([1, 0], dtype=np.int64),
+            wavevector_index=np.array([[0, 0, 0], [1, 0, 0]], dtype=np.int64),
+            is_soc_mode=False,
+        )
+
+
+def test_validate_accepts_mixed_column_spin_when_soc_mode():
+    """v3.1 (is_soc_mode=True): column_spin=-1 is allowed."""
+    validate_general_prerequisites(
+        Ncond=2,
+        stepped_occupation=np.array([[1.0, 0.0], [0.0, 1.0]]),
+        column_spin=np.array([-1, -1], dtype=np.int64),
+        partner_rows=np.array([1, 0], dtype=np.int64),
+        wavevector_index=np.array([[0, 0, 0], [1, 0, 0]], dtype=np.int64),
+        is_soc_mode=True,
+    )
+
+
+def test_validate_rejects_unknown_column_spin_under_soc_mode():
+    """SOC path: column_spin values outside {-1, 0, 1} rejected."""
+    with pytest.raises(ValueError, match="not recognized"):
+        validate_general_prerequisites(
+            Ncond=2,
+            stepped_occupation=np.array([[1.0, 0.0], [0.0, 1.0]]),
+            column_spin=np.array([5, -3], dtype=np.int64),
+            partner_rows=np.array([1, 0], dtype=np.int64),
+            wavevector_index=np.array([[0, 0, 0], [1, 0, 0]], dtype=np.int64),
+            is_soc_mode=True,
+        )
+
+
+def test_validate_soc_rejects_non_self_imbalance():
+    """SOC path: non-self canonical (k, p) with n_occ(k) != n_occ(p) is
+    rejected (spec §3.6)."""
+    # Ncond=2 matches sum=2 so we pass the Ncond parity + sum guards and
+    # reach the SOC balance check. Row 0 has 2 occupied columns, row 1
+    # has 0, and partners are {0<->1} (non-self) so the imbalance must
+    # trigger.
+    with pytest.raises(ValueError, match="imbalance"):
+        validate_general_prerequisites(
+            Ncond=2,
+            stepped_occupation=np.array([
+                [1.0, 1.0, 0.0, 0.0],  # k=0: 2 occupied
+                [0.0, 0.0, 0.0, 0.0],  # k=1: 0 occupied
+            ]),
+            column_spin=np.array([-1, -1, -1, -1], dtype=np.int64),
+            partner_rows=np.array([1, 0], dtype=np.int64),
+            wavevector_index=np.array(
+                [[0, 0, 0], [1, 0, 0]], dtype=np.int64,
+            ),
+            is_soc_mode=True,
+        )
+
+
+def test_validate_soc_rejects_self_pair_odd():
+    """SOC path: self canonical k with odd n_occ(k) rejected (spec §3.6).
+
+    Two self-pair canonical blocks: k=0 has 3 occupied (ODD -> reject);
+    k=1 has 1 occupied. Total Ncond=4 is even so the Ncond parity guard
+    is satisfied and the SOC self-pair parity check fires."""
+    with pytest.raises(ValueError, match="odd"):
+        validate_general_prerequisites(
+            Ncond=4,
+            stepped_occupation=np.array([
+                [1.0, 1.0, 1.0, 0.0],  # k=0 self-pair: 3 occupied (ODD)
+                [1.0, 0.0, 0.0, 0.0],  # k=1 self-pair: 1 occupied
+            ]),
+            column_spin=np.array([-1, -1, -1, -1], dtype=np.int64),
+            partner_rows=np.array([0, 1], dtype=np.int64),
+            wavevector_index=np.array(
+                [[0, 0, 0], [1, 0, 0]], dtype=np.int64,
+            ),
+            is_soc_mode=True,
+        )
+
+
 def test_validate_general_prerequisites_rejects_odd_ncond():
     stepped = np.zeros((2, 4), dtype=np.float64)
     stepped[0, 0] = 1.0
@@ -291,3 +374,182 @@ def test_build_fij_general_populates_up_up_block_for_2sz_positive():
     assert np.max(np.abs(F[:L, L:])) < 1e-14
     # Antisymmetry: F.T == -F
     np.testing.assert_allclose(F.T, -F, atol=1e-14)
+
+
+def test_build_slater_orbitals_soc_spin_block_permutation():
+    """Under is_soc_mode=True, A rows are indexed r_phys + spin * Ns_phys
+    (site-major, spin-minor). Choose Ns_phys=2 so two sites share the same
+    intra-cell orbital component and any orbital-based row aliasing
+    would collapse them; assert every distinct row is populated.
+
+    The two pair members here pull from different k_rows (k=0 and k=1)
+    with the same column index 0 — the new SOC branch reads eigenvector
+    at the specified k_row, so populating (k=0, col=0) at column 0 of A
+    and (k=1, col=0) at column 1 of A must not silently fall back to
+    summing across k.
+    """
+    import numpy as np
+    from tools._uhfk_to_mvmc.general_fij_builder import build_slater_orbitals
+
+    Ns_phys = 2
+    # 2 folded k-points, 2 spin-orbital rows per k (a_folded=0, spin=0/1)
+    eigenvector = np.zeros((2, 2, 2), dtype=complex)
+    # Inject amplitudes so each (r_phys, spin) row gets a unique amplitude
+    eigenvector[0, 0, 0] = 1.0 + 0.0j  # k=0, packed idx 0 (a_folded=0, s=0)
+    eigenvector[0, 1, 0] = 2.0 + 0.0j  # k=0, packed idx 1 (a_folded=0, s=1)
+    eigenvector[1, 0, 0] = 3.0 + 0.0j  # k=1, packed idx 0
+    eigenvector[1, 1, 0] = 4.0 + 0.0j  # k=1, packed idx 1
+    column_spin = np.array([-1, -1], dtype=np.int64)  # mixed
+    site_R_int = np.array([[0, 0, 0], [1, 0, 0]], dtype=np.int64)
+    A = build_slater_orbitals(
+        wavevector_index=np.array([[0, 0, 0], [1, 0, 0]], dtype=np.int64),
+        eigenvector=eigenvector,
+        column_spin=column_spin,
+        site_positions=site_R_int,
+        cell_shape=np.array([2, 1, 1], dtype=np.int64),
+        subshape=np.array([1, 1, 1], dtype=np.int64),
+        theta=np.zeros(3, dtype=np.float64),
+        # single pair between (k=0, col=0) and (k=1, col=0)
+        pair_list=[((0, 0), (1, 0))],
+        is_soc_mode=True,
+    )
+    # A shape: (2 * Ns_phys, 2 * len(pair_list)) = (4, 2)
+    assert A.shape == (4, 2)
+    # Every row of A must have a nonzero amplitude - collapse would leave
+    # a row all-zero.
+    for row in range(4):
+        assert np.any(np.abs(A[row]) > 1e-12), (
+            f"row {row} = r_phys + spin * Ns_phys collapsed; "
+            "check permutation formula"
+        )
+
+
+def test_build_pair_list_v3_spin_aware_regression():
+    """v3 A/B fixtures produce byte-for-byte identical pair lists to the
+    frozen goldens; guards against the SOC refactor accidentally routing
+    v3 through the SOC rule (spec §3.5 vs §3.3).
+
+    Codex adversarial review (Rev.1, finding 4): the pair-list inputs
+    are loaded from tracked snapshots under ``tests/data/`` (produced
+    once from ``tests/validation/.../work/hwave/output/*.npz`` and
+    committed), so a clean-checkout CI run without the gitignored
+    ``work/`` directory still exercises the regression.
+    """
+    import json
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent
+    data_dir = repo_root / "tests/data"
+    goldens = json.loads(
+        (data_dir / "v3_pair_list_regression.json").read_text()
+    )
+    for case in ("case_pbc_sz2", "case_zeeman_sz_free"):
+        inputs = np.load(data_dir / f"v3_pair_list_input_{case}.npz")
+        partner_rows, _ = find_partner_rows(
+            inputs["wavevector_index"], np.zeros(3),
+            inputs["cell_shape"],
+        )
+        canonical, _ = compute_canonical_reps(
+            partner_rows, inputs["wavevector_index"]
+        )
+        pair_list = build_pair_list(
+            inputs["occupation"], inputs["column_spin"],
+            canonical, partner_rows,
+        )
+
+        def to_jsonable(pair):
+            if isinstance(pair, dict):
+                return {
+                    k: (
+                        list(v)
+                        if isinstance(v, (list, tuple, np.ndarray))
+                        else v
+                    )
+                    for k, v in pair.items()
+                }
+            if isinstance(pair, (list, tuple)):
+                return [int(x) for x in pair]
+            raise TypeError(f"pair type {type(pair)!r}")
+
+        observed = [to_jsonable(p) for p in pair_list]
+        assert observed == goldens[case], (
+            f"{case}: v3 pair list changed!\n"
+            f"Observed:\n{observed}\n"
+            f"Golden:\n{goldens[case]}"
+        )
+
+
+def test_build_pair_list_soc_non_self_canonical_alpha_pairing():
+    """Under is_soc_mode=True, non-self canonical block pairs the
+    alpha-th occupied column at k with the alpha-th at partner(k)
+    (spec §3.5). Each pair member carries its k_row so
+    build_slater_orbitals can read the eigenvector at the correct k.
+    """
+    stepped = np.array(
+        [
+            [1.0, 1.0, 0.0, 0.0],  # k=0: cols 0, 1 occupied
+            [1.0, 1.0, 0.0, 0.0],  # k=1: cols 0, 1 occupied
+        ],
+        dtype=np.float64,
+    )
+    column_spin = np.array([-1, -1, -1, -1], dtype=np.int64)
+    canonical = [0]
+    partner_rows = np.array([1, 0], dtype=np.int64)
+    pairs = build_pair_list(
+        stepped, column_spin, canonical, partner_rows,
+        is_soc_mode=True,
+    )
+    # 2 occupied columns at k, 2 at partner -> 2 alpha-alpha pairs;
+    # each pair carries ((k_row_alpha, col_alpha), (k_row_beta, col_beta)).
+    assert len(pairs) == 2
+    assert pairs[0] == ((0, 0), (1, 0))
+    assert pairs[1] == ((0, 1), (1, 1))
+
+
+def test_build_pair_list_soc_self_pair_odd_rejected():
+    """SOC self canonical block with odd n_occ -> ValueError (spec §3.5)."""
+    stepped = np.array([[1.0, 1.0, 1.0, 0.0]], dtype=np.float64)
+    column_spin = np.array([-1, -1, -1, -1], dtype=np.int64)
+    canonical = [0]
+    partner_rows = np.array([0], dtype=np.int64)
+    with pytest.raises(ValueError, match="odd"):
+        build_pair_list(
+            stepped, column_spin, canonical, partner_rows,
+            is_soc_mode=True,
+        )
+
+
+def test_build_pair_list_soc_non_self_imbalance_rejected():
+    """SOC non-self canonical block with n_occ(k) != n_occ(partner)
+    -> ValueError (spec §3.5)."""
+    stepped = np.array(
+        [
+            [1.0, 1.0, 0.0, 0.0],  # k=0: 2 occupied
+            [1.0, 0.0, 0.0, 0.0],  # k=1: 1 occupied - imbalance
+        ],
+        dtype=np.float64,
+    )
+    column_spin = np.array([-1, -1, -1, -1], dtype=np.int64)
+    canonical = [0]
+    partner_rows = np.array([1, 0], dtype=np.int64)
+    with pytest.raises(ValueError, match="imbalance"):
+        build_pair_list(
+            stepped, column_spin, canonical, partner_rows,
+            is_soc_mode=True,
+        )
+
+
+def test_build_pair_list_soc_self_pair_consecutive_columns():
+    """SOC self canonical k: consecutive occupied columns get paired
+    (0, 1), (2, 3), ... (spec §3.5). Each pair member carries its
+    k_row (both == self-pair k here).
+    """
+    stepped = np.array([[1.0, 1.0, 1.0, 1.0]], dtype=np.float64)
+    column_spin = np.array([-1, -1, -1, -1], dtype=np.int64)
+    canonical = [0]
+    partner_rows = np.array([0], dtype=np.int64)
+    pairs = build_pair_list(
+        stepped, column_spin, canonical, partner_rows,
+        is_soc_mode=True,
+    )
+    assert pairs == [((0, 0), (0, 1)), ((0, 2), (0, 3))]

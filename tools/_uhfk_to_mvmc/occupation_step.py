@@ -29,6 +29,7 @@ def step_occupation(
     column_mu_group: np.ndarray,
     T: float,
     ncond_per_group,
+    is_soc_mode: bool = False,
 ):
     """Return ``(stepped_occupation, summary)``.
 
@@ -39,14 +40,20 @@ def step_occupation(
     eigenvalue : (nvol, nd) float
         From eigen.npz.
     column_spin : (nd,) int
-        From occupation.npz. -1 (Sz-free / mixed) is rejected by the
-        caller before reaching here (Task 9 / 10), but we re-check.
+        From occupation.npz. -1 (Sz-free / mixed) is rejected here for
+        the v3 path; accepted when ``is_soc_mode=True`` (v3.1 path,
+        handled in Task 6).
     column_mu_group : (nd,) int
         Mu-group index per column.
     T : float
         SCF temperature; used only for the residual check threshold.
     ncond_per_group : list[int]
         Expected occupied count per mu-group (from input toml's Ncond/2Sz).
+    is_soc_mode : bool, default False
+        v3.1 dispatch flag threaded through by the CLI. When True,
+        ``column_spin = -1`` (single mixed-spin block with a single
+        global mu-group) is accepted and the lowest ``Ncond``
+        eigenvalues are occupied regardless of spin label.
 
     Returns
     -------
@@ -61,10 +68,11 @@ def step_occupation(
     column_spin = np.asarray(column_spin, dtype=np.int64)
     column_mu_group = np.asarray(column_mu_group, dtype=np.int64)
 
-    if np.any(column_spin < 0):
+    if np.any(column_spin < 0) and not is_soc_mode:
         raise OccupationGuardError(
-            "occupation_step encountered column_spin = -1 (Sz-free / mixed "
-            "block); v1 spec section 7 rejects this; caller must guard"
+            "occupation_step encountered column_spin = -1 (Sz-free / "
+            "mixed block); v1/v3 spec section 7 rejects this without "
+            "is_soc_mode=True; caller must guard or enable SOC path"
         )
 
     n_groups = len(ncond_per_group)

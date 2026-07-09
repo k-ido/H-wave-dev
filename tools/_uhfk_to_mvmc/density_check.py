@@ -69,16 +69,40 @@ def compare_against_onebodyg_uhf(
 
 
 def compare_against_onebodyg_uhf_general(
-    G_all: np.ndarray, onebodyg_uhf_path: str, tol: float = 1e-10
+    G_all: np.ndarray, onebodyg_uhf_path: str, tol: float = 1e-10,
+    is_soc_mode: bool = False,
 ) -> None:
     """Compare bridge-built 2Ns × 2Ns G against H-wave's greenone.dat
-    for the General path (spec §4.5).
+    for the General path (spec §4.5, §3.7).
 
     G_all[iσ, jσ'] = <c^†_{i,σ} c_{j,σ'}> in the physical basis with
-    ``all_i = i + σ * Nsite``. greenone.dat lines are ``i s j t re im``;
-    for the v3 A+B scope, s != t entries should be zero within `tol`
-    (mixed-block scope-violation guard). s == t entries compare to
-    G_all[i + s*Ns, j + t*Ns] element-wise.
+    the mVMC spin-block index ``all_i = i + σ * Ns`` (site-major,
+    spin-minor). greenone.dat lines are ``i s j t re im`` and are
+    compared element-wise to ``G_all[i + s*Ns, j + t*Ns]``.
+
+    Behavior by mode (spec §3.7):
+
+    ``is_soc_mode=False`` (v3 Sz-diagonal path)
+        The bridge produces a spin-block-diagonal ``G_all`` because
+        amplitudes are Sz-fixed. Reference greenone.dat rows with
+        s == t compare element-wise. Rows with s != t are also
+        compared element-wise; because ``G_all`` is zero on
+        off-diagonal blocks, any non-zero s != t reference value
+        raises ``DensityMismatchError``. This element-wise comparison
+        is the mixed-block scope-violation guard: it catches the case
+        where a caller feeds SOC-tainted reference data into the v3
+        path.
+
+    ``is_soc_mode=True`` (v3.1 SOC path)
+        Both G_all and the reference greenone.dat carry physically
+        non-zero s != t entries. Every row is compared under the same
+        `tol` regardless of (s, t); the scope-violation framing does
+        not apply because the SOC bridge deliberately populates the
+        off-diagonal spin blocks.
+
+    Both modes share the same comparison kernel: uniform element-wise
+    match under `tol`. The flag documents intent and gates any future
+    mode-specific diagnostics without changing v3 behavior.
     """
     G_all = np.asarray(G_all, dtype=np.complex128)
     two_ns = G_all.shape[0]
@@ -95,7 +119,8 @@ def compare_against_onebodyg_uhf_general(
             diffs.append((i, s, j, t, v_bridge, v_uhf))
     if diffs:
         head = diffs[:3]
+        mode_label = "SOC" if is_soc_mode else "v3 Sz-diagonal"
         raise DensityMismatchError(
-            f"{len(diffs)} (i, s, j, t) entries differ beyond tol={tol}; "
-            f"first 3: {head}"
+            f"{len(diffs)} (i, s, j, t) entries differ beyond tol={tol} "
+            f"[{mode_label} mode]; first 3: {head}"
         )

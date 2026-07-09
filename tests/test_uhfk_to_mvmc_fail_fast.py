@@ -117,7 +117,12 @@ def test_eigenvector_shape_mismatch_fails_fast():
 
 
 def test_apbc_without_sign_column_fails_fast():
-    """APBC + orbitalidx.def lacking 4-column sign → reject."""
+    """APBC + orbitalidx.def lacking 4-column sign → reject.
+
+    The eigen.npz twist_offset is updated in lockstep with the input.toml
+    BoundaryCondition so the v3.1 eigen twist consistency check (Task 2)
+    does not preempt the sign-column reject this test is targeting.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         paths = _write_minimal_inputs(tmp, subshape=(1, 1, 1))
         with open(paths["input"], "w") as fp:
@@ -127,6 +132,17 @@ def test_apbc_without_sign_column_fails_fast():
                 "CellShape = [4, 1, 1]\nSubShape  = [1, 1, 1]\n"
                 'BoundaryCondition = ["antiperiodic", "periodic", "periodic"]\n'
             )
+        # Rewrite eigen.npz with twist_offset matching the APBC BC above.
+        np.savez(
+            paths["eigen"],
+            eigenvalue=np.zeros((4, 2), dtype=np.float64),
+            eigenvector=np.zeros((4, 2, 2), dtype=np.complex128),
+            wavevector_unit=np.eye(3, dtype=np.float64),
+            wavevector_index=np.array(
+                [[v, 0, 0] for v in [0, 1, -2, -1]], dtype=np.int64
+            ),
+            twist_offset=np.array([0.5, 0.0, 0.0], dtype=np.float64),
+        )
         result = subprocess.run(
             [sys.executable, "tools/uhfk_to_mvmc.py",
              "--input", paths["input"], "--eigen", paths["eigen"],

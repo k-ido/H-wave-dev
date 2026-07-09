@@ -51,6 +51,24 @@ mVMC の PairProduct 状態を H-wave UHF の Slater 行列で初期化できる
   mVMC 本体の ComplexUHF と同じ手法
   (``mVMC-1.4.0/src/ComplexUHF/output.c:274``)。
 
+スコープ (v3.1)
+^^^^^^^^^^^^^^^
+
+- **Sz-free mixed block (SOC、``enable_spin_orbital = true``)** →
+  General-SOC path。``orbitalidx_general.def`` (6 列) を消費し、Sz 非保存の
+  ``F[up_i, down_j]`` / ``F[down_i, up_j]`` を出力する。Zeeman、Rashba、
+  Dresselhaus、一般 σ_x/σ_y 型 1-body coupling をサポート。
+- ``enable_spin_orbital = true`` + APBC の組合せは **v3.2 で扱う**。
+  dispatch で明示的に fail-fast する。
+- ``SubShape > [1, 1, 1]`` と SOC の組合せは **v3.2 で扱う**。
+  StdFace の ``orbitalidxgen.def`` クラスが full-lattice 並進不変を仮定
+  しているため、副格子 fold 下では SOC が破る。
+- ``eigen.npz["twist_offset"]`` を ``input.toml`` の canonical
+  ``BoundaryCondition`` と照合し、stale 入力/eigen のペアを排除する。
+- SOC 下では bridge が H-wave の ``Transfer.dat`` から ``trans.def`` も
+  出力する (下記参照)。mVMC の ``vmcdry.out`` は Rashba の s!=t 項を
+  保存できない。
+
 ワークフロー
 ^^^^^^^^^^^^
 
@@ -107,6 +125,64 @@ CLI は ``--orbitalidx`` を先に parse し、
 ``N_up == N_down``、``column_spin ∈ {0, 1}``、``column_mu_group`` の
 unique 数が 2、column_spin と mu_group が bijective であることを **全て**
 満たしたときのみ True になる。
+
+Dispatch (v3.1、6-case)
+^^^^^^^^^^^^^^^^^^^^^^^
+
+CLI は ``input.toml`` を parse した後
+``is_soc_mode = toml_param.get("enable_spin_orbital", False)`` を計算し、
+``(is_antiparallel_metadata, orbitalidx_format, is_soc_mode)`` の組で
+分岐する:
+
+- ``(True, antiparallel, False)`` — v2.1 AntiParallel (変更なし)。
+- ``(True, general, False)`` — v3 forced-General。
+- ``(False, general, False)`` — v3 General (A/B)。
+- ``(False, antiparallel, False)`` — 拒絶。
+- ``(\*, general, True)`` — **v3.1 General-SOC**。
+- ``(\*, antiparallel, True)`` — 拒絶 (SOC は 6 列必須)。
+
+BoundaryCondition の契約 (v3.1)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+bridge は ``BoundaryCondition`` を H-wave の共有 helper
+``normalize_boundary_condition`` に委譲して正規化する。受理する形式:
+
+- PBC: ``"p"``, ``"periodic"`` (case-insensitive、whitespace-stripped)
+- APBC: ``"ap"``, ``"antiperiodic"`` (同上)
+
+これ以外の文字列は dispatch 前に ``ValueError``。raw fallback は存在しない。
+key を省略すると all-PBC を default とする。
+
+Bridge trans.def 出力 (v3.1 SOC 限定)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+SOC 下では mVMC の ``vmcdry.out`` が ``StdFace_Hopping`` で ``trans.def``
+を作るが、spin-diagonal のみで Rashba の s != t 項が落ちる。この gap を
+埋めるため、bridge が H-wave の ``Transfer.dat`` (Wannier90 風形式、
+``iWan = 2 * a_phys + spin + 1``) を読み、mVMC の ``trans.def`` を
+``(i, s, j, t, re, im)`` 形式で書き出す。Rashba の spin-off-diagonal を
+保持する。
+
+符号規約 (実験的に固定):
+
+- ``s == t`` (NN hopping): ``trans = -val_hwave`` (vmcdry の flip と一致)。
+- ``s != t`` (Rashba): ``trans = +val_hwave``。
+
+この mixed 規約は
+``tests/validation/uhfk_mvmc_pairproduct/case_soc_rashba_2d_nosub``
+の E2E に対して calibrate 済み。一様 flip では ⟨H⟩ が 42.58% ずれる。
+mVMC upgrade 後は再検証が必要 (mVMC 側の機構は
+``locgrn_fsz.c:128`` に mVMC 作者の ``//TBC`` コメントが残る)。
+
+新規 CLI フラグ (SOC 限定): ``--transfer <path>`` と ``--emit-trans <path>``。
+
+v3.1 のスコープ外
+^^^^^^^^^^^^^^^^^
+
+- SOC + APBC 組合せ (v3.2 で扱う)。dispatch で拒絶。
+- SOC + ``SubShape > [1, 1, 1]`` 組合せ (v3.2 で扱う)。
+- 2-body Sz 非保存相互作用 (spin-flip Coulomb, Hund coupling,
+  pair hopping)。CoulombIntra (on-site U) のみが v3.1 の唯一の 2-body 項。
 
 クラス一致性チェック (v3 General)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

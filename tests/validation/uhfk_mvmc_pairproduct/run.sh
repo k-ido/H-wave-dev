@@ -8,6 +8,15 @@ ROOT="${HERE}/../../.."
 CASE_DIR="${HERE}/${CASE}"
 [[ -d "${CASE_DIR}" ]] || { echo "case not found: ${CASE_DIR}" >&2; exit 1; }
 
+# v3.1 spec §1 out-of-scope: SubShape > 1 + SOC has an additional
+# class-consistency issue (independent of the trans.def emitter added
+# in Task 15) that is deferred to v3.2. Reject the fixture up-front
+# so the docker E2E loop can't accidentally exercise the deferred path.
+if [[ "${CASE}" == "case_soc_rashba_2d_sub" ]]; then
+  echo "case_soc_rashba_2d_sub: deferred to v3.2 (v3.1 spec §1 out-of-scope)" >&2
+  exit 1
+fi
+
 # We reuse the mVMC build under apbc_complexuhf/build/mvmc to avoid two copies.
 MVMC_BUILD="${HERE}/../apbc_complexuhf/build/mvmc/build"
 VMCDRY="${MVMC_BUILD}/src/mVMC/vmcdry.out"
@@ -48,11 +57,45 @@ main()
 echo "  H-wave UHFk SCF: ${HWAVE_WORK}/output/*"
 
 # ---- step 1.5: harness-gate — assert target occupation per case ----
-if grep -qE "case_(pbc_sz2|zeeman_sz_free)" <<< "${CASE}"; then
+if grep -qE "case_(pbc_sz2|zeeman_sz_free|soc_rashba_2d_nosub|soc_rashba_2d_nosub_apbc|soc_rashba_2d_sub)" <<< "${CASE}"; then
   python3 "${HERE}/scripts/assert_occupation.py" "${CASE_DIR}" "${HWAVE_WORK}" || {
     echo "harness-gate: occupation assertion failed for ${CASE}" >&2
     exit 1
   }
+fi
+
+# ---- step 1.6: SOC canonical-mix gate for case_soc_rashba_2d_sub ----
+# Spec §4.2.3 criterion 5: SubShape [2,2,1] on CellShape [6,4,1] must
+# yield a folded BZ with at least one non-self canonical block. If a
+# future refactor of find_partner_rows / compute_canonical_reps or of
+# the fixture's SubShape choice silently degenerates every folded k to a
+# self-pair, the block-mix contract is broken and this fixture no longer
+# exercises the non-self canonical path — fail loud.
+if [[ "${CASE}" == "case_soc_rashba_2d_sub" ]]; then
+  HWAVE_WORK="${HWAVE_WORK}" PYTHONPATH="${ROOT}/src:${ROOT}" python3 - <<'PYEOF' || exit 1
+import os, sys
+import numpy as np
+from tools._uhfk_to_mvmc.general_fij_builder import compute_canonical_reps
+from tools._uhfk_to_mvmc.partner_index import find_partner_rows
+
+hwave_work = os.environ["HWAVE_WORK"]
+eig = np.load(os.path.join(hwave_work, "output", "eigen.npz"), allow_pickle=False)
+# Fixture pins BoundaryCondition = periodic in all directions -> theta = 0.
+theta = np.zeros(3)
+# CellShape=[6,4,1] / SubShape=[2,2,1] -> folded BZ [3,2,1].
+L_folded = np.array([3, 2, 1], dtype=np.int64)
+partner_rows, _ = find_partner_rows(eig["wavevector_index"], theta, L_folded)
+canonical, self_pairs = compute_canonical_reps(partner_rows, eig["wavevector_index"])
+n_non_self = len(canonical) - len(self_pairs)
+if n_non_self < 1:
+    print(
+        f"harness-gate: case_soc_rashba_2d_sub reported {n_non_self} non-self "
+        f"canonical blocks; SubShape choice degenerated",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+print(f"  canonical mix: {n_non_self} non-self, {len(self_pairs)} self")
+PYEOF
 fi
 
 # ---- step 2: vmcdry to produce mVMC .def files ----
@@ -95,6 +138,16 @@ else
 fi
 
 cd "${ROOT}"
+# v3.1 spec §3.8: SOC path additionally emits mVMC trans.def because
+# StdFace's FermionHubbardGC generator drops Rashba s != t transfer
+# entries. Non-SOC fixtures leave vmcdry's trans.def untouched.
+BRIDGE_SOC_ARGS=()
+if [[ "${CASE}" == case_soc_* ]]; then
+  BRIDGE_SOC_ARGS=(
+    --transfer   "${HWAVE_WORK}/Transfer.dat"
+    --emit-trans "${MVMC_WORK}/trans.def"
+  )
+fi
 python3 tools/uhfk_to_mvmc.py \
     --input        "${HWAVE_WORK}/input.toml" \
     --eigen        "${HWAVE_WORK}/output/eigen.npz" \
@@ -105,8 +158,12 @@ python3 tools/uhfk_to_mvmc.py \
     --check-density \
     --onebodyg-uhf "${HWAVE_WORK}/output/greenone.dat" \
     --epsilon-noise "${EPSILON_NOISE}" \
-    --rng-seed "${RNG_SEED}"
+    --rng-seed "${RNG_SEED}" \
+    "${BRIDGE_SOC_ARGS[@]}"
 echo "  bridge wrote: ${MVMC_WORK}/zqp_orbital_uhfk.dat (density check OK, epsilon=${EPSILON_NOISE})"
+if [[ "${CASE}" == case_soc_* ]]; then
+  echo "  bridge wrote: ${MVMC_WORK}/trans.def (SOC: Rashba entries preserved)"
+fi
 
 # ---- step 4: register InOrbital(General) in namelist.def ----
 NAMELIST="${MVMC_WORK}/namelist.def"

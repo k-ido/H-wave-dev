@@ -11,12 +11,39 @@ except ImportError:
 
 
 def load_input_toml(path):
-    """Read input.toml and return the param dict from [mode.param]."""
+    """Read input.toml and return a merged param dict.
+
+    H-wave's UHFk solver keeps two related sections in input.toml:
+
+    - ``[mode]`` — solver-level flags such as ``flag_fock`` and
+      ``enable_spin_orbital`` (see ``hwave.solver.uhfk._init_mode``,
+      which reads its ``param`` argument directly from the top-level
+      ``[mode]`` section, not ``[mode.param]``).
+    - ``[mode.param]`` — numeric parameters such as ``CellShape``,
+      ``Ncond``, ``EPS``, ``BoundaryCondition``.
+
+    The bridge needs both. This helper returns a shallow-merged dict:
+    every top-level ``[mode]`` scalar (anything that is not the
+    ``param`` subtable itself) is copied in first, then the
+    ``[mode.param]`` entries are layered on top. ``[mode.param]``
+    values therefore take precedence if a key is present in both.
+
+    The merge lets the CLI look up ``enable_spin_orbital`` regardless
+    of whether the user placed it under ``[mode]`` (the H-wave
+    convention that all SOC fixtures use) or ``[mode.param]`` (the
+    layout the pre-v3.1 dispatch tests use).
+    """
     with open(path, "rb") as fp:
         data = tomllib.load(fp)
     if "mode" not in data or "param" not in data["mode"]:
         raise ValueError(f"{path}: missing [mode.param] section")
-    return data["mode"]["param"]
+    merged = {}
+    for key, value in data["mode"].items():
+        if key == "param":
+            continue
+        merged[key] = value
+    merged.update(data["mode"]["param"])
+    return merged
 
 
 def derive_ne_per_group(toml_param):

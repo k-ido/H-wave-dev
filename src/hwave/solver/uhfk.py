@@ -410,10 +410,31 @@ class UHFk(solver_base):
         Bx,By,Bz = self.subshape
         nx,ny,nz = self.shape
 
+        # geom norb is the spin-orbital count in SO mode (norb_phys * 2); the
+        # spin-block reshape (_reshape_orbit_spin) keeps that stride, but the
+        # physical-orbital reshape (_reshape_orbit_) folds interaction indices
+        # that run over physical orbitals only and must stride by norb_phys.
+        # Using norb_orig there would place folded indices at 2x the spacing
+        # the downstream uab_r / vab_r arrays are sized for, and CoulombIntra
+        # with SubShape > [1,1,1] under enable_spin_orbital = True would raise
+        # IndexError in _make_ham_inter. Mirrors the rpa.py fix from commit
+        # 4d9ea8f.
         norb_orig = self.param_ham_orig["Geometry"]["norb"]
+        # getattr with default: some test stubs skip _init_orbit and don't set
+        # self.enable_spin_orbital; those stubs are always non-SO.
+        so_mode = getattr(self, "enable_spin_orbital", False)
+        if so_mode:
+            if norb_orig % 2 != 0:
+                raise ValueError(
+                    "spin-orbital mode requires an even Geometry norb "
+                    "(the spin-orbital count = 2 * physical orbitals); "
+                    "got {}".format(norb_orig))
+            norb_phys_orig = norb_orig // 2
+        else:
+            norb_phys_orig = norb_orig
 
         def _reshape_orbit_(a, x):
-            return a + self.norb_orig * ( x[0] + Bx * (x[1] + By * (x[2])))
+            return a + norb_phys_orig * ( x[0] + Bx * (x[1] + By * (x[2])))
 
         def _reshape_orbit_spin(a, x):
             a_, s_ = a%norb_orig, a//norb_orig
@@ -2502,15 +2523,6 @@ class UHFk(solver_base):
             logger.error("_save_greenone: onebodyg_uhf and geometry_uhf are required")
             return None
 
-        if self.enable_spin_orbital:
-            # In spin-orbital mode spin is folded into the orbital index (ns=1),
-            # so the (i, s, j, t) one-body Green output cannot be expressed on
-            # the (spin, orbital, spin, orbital) axes. Reject rather than crash.
-            logger.error(
-                "_save_greenone: one-body Green output (onebodyg) is not "
-                "supported in spin-orbital mode")
-            return None
-
         if self.has_sublattice:
             gr = self._deflate_green(self.Green)
         else:
@@ -2519,29 +2531,42 @@ class UHFk(solver_base):
         geom = green_info["geometry_uhf"]
         greenone = green_info["onebodyg_uhf"]
 
-        lx,ly,lz = self.cellshape
-        lvol     = self.cellvol
-        norb     = self.norb
-        nd       = self.nd
-        ns       = self.ns
-
+        lx, ly, lz = self.cellshape
         tbl = geom["site2vec"]
 
-        def _pack_site(ix,iy,iz):
-            return ix + lx * (iy + ly * iz)
+        def _pack_site(ix, iy, iz):
+            # self.Green is reshaped from (nx, ny, nz, ns, norb, ns, norb)
+            # to (nvol, ns, norb, ns, norb) in C-order (numpy default). The
+            # flat index into gr must therefore also follow C-order — the
+            # x direction is the slowest, z is the fastest.
+            # Historical bug (Fortran-order): ``ix + lx * (iy + ly * iz)``
+            # returned the wrong element for any 2D+ system whose Green
+            # function is not x<->y symmetric (e.g. Rashba SOC), because it
+            # transposes the x and z axes relative to self.Green's actual
+            # memory layout. Same-spin sectors of the shipped v1/v2/v3 test
+            # fixtures happened to be x<->y symmetric so the bug was silent
+            # until the SOC branch exercised s != t entries.
+            return ix * ly * lz + iy * lz + iz
 
         with open(file_name, "w") as fw:
             # G(i,a,s; j,b,t) := G(a,s;b,t;j-i)
-            for (i,s,j,t) in greenone:
-                (ix,iy,iz,a) = tbl[i]
-                (jx,jy,jz,b) = tbl[j]
+            for (i, s, j, t) in greenone:
+                (ix, iy, iz, a_phys) = tbl[i]
+                (jx, jy, jz, b_phys) = tbl[j]
 
                 kx = (jx - ix + lx) % lx
                 ky = (jy - iy + ly) % ly
                 kz = (jz - iz + lz) % lz
-                idx = _pack_site(kx,ky,kz)
+                idx = _pack_site(kx, ky, kz)
 
-                v = gr[idx,s,a,t,b]
+                if self.enable_spin_orbital:
+                    # gr.shape = (nvol, 1, 2*norb_phys, 1, 2*norb_phys);
+                    # pack spin into the orbital slot as 2*a + s.
+                    a_packed = 2 * a_phys + s
+                    b_packed = 2 * b_phys + t
+                    v = gr[idx, 0, a_packed, 0, b_packed]
+                else:
+                    v = gr[idx, s, a_phys, t, b_phys]
 
                 if not self.boundary_periodic:
                     r_i = np.array([ix, iy, iz], dtype=np.float64)
@@ -2551,7 +2576,7 @@ class UHFk(solver_base):
                     v = v * inverse_gauge_phase(r_i, r_j, theta, Lvec)
 
                 fw.write("{:3} {:3} {:3} {:3}  {:.12e} {:.12e}\n".format(
-                    i, s, j, t, v.real, v.imag
+                    i, s, j, t, v.real, v.imag,
                 ))
 
         logger.info("save_results: save greenone to file {}".format(file_name))

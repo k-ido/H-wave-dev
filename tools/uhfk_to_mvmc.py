@@ -33,6 +33,11 @@ from tools._uhfk_to_mvmc.density_check import (
     density_from_amplitudes, compare_against_onebodyg_uhf,
     DensityMismatchError,
 )
+from tools._uhfk_to_mvmc.boundary_input import (
+    BoundaryInputError,
+    check_eigen_twist_consistency,
+    normalize_boundary_condition_list,
+)
 
 
 def _column_spin_to_mu_group_is_bijective(column_spin, column_mu_group):
@@ -80,19 +85,48 @@ def main(argv=None):
         "--rng-seed", type=int, default=7919,
         help="Seed for the noise RNG (default: 7919, reproducible).",
     )
+    # v3.1 spec §3.8: SOC path additionally emits mVMC trans.def from
+    # H-wave Transfer.dat because StdFace's HubbardGC generator drops
+    # Rashba s != t entries. Non-SOC path leaves vmcdry's trans.def
+    # untouched, so both flags default to None and are ignored unless
+    # is_soc_mode = True.
+    parser.add_argument(
+        "--transfer", default=None,
+        help=(
+            "H-wave Transfer.dat path. Required under SOC "
+            "(enable_spin_orbital = true); ignored otherwise."
+        ),
+    )
+    parser.add_argument(
+        "--emit-trans", dest="emit_trans", default=None,
+        help=(
+            "Output mVMC trans.def path. Required under SOC; ignored "
+            "otherwise. The emitter overwrites the existing trans.def "
+            "so vmcdry.out must have already produced its Hamiltonian "
+            "file layout at this location."
+        ),
+    )
     args = parser.parse_args(argv)
 
     toml_param = load_input_toml(args.input)
     cell_shape = list(toml_param["CellShape"])
     sub_shape = list(toml_param.get("SubShape", cell_shape))
-    boundary = list(toml_param.get(
-        "BoundaryCondition", ["periodic", "periodic", "periodic"]
-    ))
-    enable_spin_orbital = bool(toml_param.get("enable_spin_orbital", False))
-    if enable_spin_orbital:
-        print("ERROR: enable_spin_orbital is not supported in v1",
-              file=sys.stderr)
+    try:
+        boundary_theta_tuple = normalize_boundary_condition_list(
+            toml_param.get("BoundaryCondition")
+        )
+    except (BoundaryInputError, ValueError) as e:
+        print(f"ERROR (boundary): {e}", file=sys.stderr)
         return 2
+    # v3.1 (spec §3.1): SOC dispatch flag. The v1 blanket reject is
+    # replaced by the 6-case dispatch matrix below. SOC+APBC is fail-fast
+    # right after boundary/eigen-twist canonicalization; SOC+antiparallel
+    # is fail-fast at the dispatch decision. The --transfer / --emit-trans
+    # required-args check for is_soc_mode lives inside the General branch
+    # (spec §3.8): SOC+APBC and SOC+antiparallel reject before the emitter
+    # is ever invoked, so those pre-dispatch rejects fire on their own
+    # dedicated messages rather than a shared "missing --transfer" one.
+    is_soc_mode = bool(toml_param.get("enable_spin_orbital", False))
 
     cell_shape_arr = np.array(cell_shape, dtype=np.int64)
     subshape_arr = np.array(sub_shape, dtype=np.int64)
@@ -111,17 +145,38 @@ def main(argv=None):
     # The strict AntiParallel check is deferred to the AntiParallel
     # branch below so the General dispatch can service Sz-imbalanced UHF.
 
-    theta = np.array([
-        np.pi if b.lower() in {"ap", "antiperiodic"} else 0.0
-        for b in boundary
-    ], dtype=np.float64)
-    has_apbc = bool(np.any(theta > 0))
+    theta = np.array(boundary_theta_tuple, dtype=np.float64)
+    has_apbc = bool(np.any(np.abs(theta - np.pi) < 1e-12))
     # L passed to build_amplitudes / partner_index is the folded lattice
     # size (partner rows are computed on the folded BZ). CellShape is
     # preserved separately for the unfold path (spec §3.3).
     L = L_folded_arr
 
     eigen = np.load(args.eigen, allow_pickle=False)
+    eigen_twist = (
+        eigen["twist_offset"] if "twist_offset" in eigen.files else None
+    )
+    try:
+        check_eigen_twist_consistency(boundary_theta_tuple, eigen_twist)
+    except BoundaryInputError as e:
+        print(f"ERROR (eigen twist): {e}", file=sys.stderr)
+        return 2
+    # v3.2 (spec §3.8): SOC + APBC is validated end-to-end via
+    # ``emit_trans_def(boundary_theta=...)`` which applies the physical
+    # wrap-phase to boundary-crossing rows so mVMC's ``H = -sum trans``
+    # recovers the physical Hamiltonian on the periodic-site frame.
+    # The prior v3.1 deferred reject is removed here.
+    # SOC + SubShape > [1, 1, 1] remains deferred: StdFace's
+    # orbitalidxgen.def classes assume full-lattice translation
+    # invariance, which SOC breaks under sublattice folding.
+    if is_soc_mode and any(int(s) != 1 for s in sub_shape):
+        print(
+            "ERROR: enable_spin_orbital = true + SubShape > [1, 1, 1] is not "
+            "validated (deferred). Rerun with SubShape = [1, 1, 1] "
+            "or drop enable_spin_orbital.",
+            file=sys.stderr,
+        )
+        return 2
     eigenvalue = eigen["eigenvalue"]
     eigenvector = eigen["eigenvector"]
     wavevector_index = eigen["wavevector_index"]
@@ -169,6 +224,28 @@ def main(argv=None):
         and _column_spin_to_mu_group_is_bijective(column_spin, column_mu_group)
     )
 
+    # v3.1 dispatch (spec §3.1): 6-case matrix over
+    #   (is_antiparallel_metadata, orbitalidx_format, is_soc_mode).
+    #
+    # | is_ap_meta | orbitalidx_format | is_soc_mode | Path             |
+    # |------------|-------------------|-------------|------------------|
+    # | True       | antiparallel      | False       | v2.1 AntiParallel|
+    # | True       | general           | False       | v3 forced-General|
+    # | False      | general           | False       | v3 General (A/B) |
+    # | False      | antiparallel      | False       | reject           |
+    # | *          | general           | True        | v3.1 General-SOC |
+    # | *          | antiparallel      | True        | reject (6-col)   |
+    if is_soc_mode and orbitalidx_format == "antiparallel":
+        print(
+            "ERROR: enable_spin_orbital = true requires 6-column "
+            "orbitalidx_general.def (StdFace: set "
+            'model="FermionHubbardGC" in stan.in). The 3/4-column '
+            "antiparallel format does not carry spin-off-diagonal "
+            "classes.",
+            file=sys.stderr,
+        )
+        return 2
+
     if is_antiparallel_metadata and orbitalidx_format == "antiparallel":
         # Fall through to the legacy v2.1 path below (unchanged). The
         # v1 spec §7 AntiParallel Sz-fixed sector constraint is enforced
@@ -184,6 +261,28 @@ def main(argv=None):
     elif orbitalidx_format == "general":
         # v3 General path (also serves the forced-General branch when
         # is_antiparallel_metadata is True).
+        # v3.1 spec §3.8: SOC path requires --transfer / --emit-trans
+        # (the emitter runs after zqp_orbital_uhfk.dat is written; check
+        # up-front so the caller catches missing args before any expensive
+        # I/O and before the output file exists on disk).
+        if is_soc_mode and (
+            args.transfer is None or args.emit_trans is None
+        ):
+            print(
+                "ERROR: enable_spin_orbital = true requires --transfer "
+                "and --emit-trans (v3.1 spec §3.8: vmcdry.out's "
+                "FermionHubbardGC generator drops Rashba s != t transfer "
+                "entries; the bridge emits the SOC-preserving trans.def "
+                "from H-wave's Transfer.dat).",
+                file=sys.stderr,
+            )
+            return 2
+        # SOC path is no longer experimental (v3.2): the trans.def sign
+        # convention is derived from H-wave's internal epsilon_k swap
+        # composed with mVMC's H = -sum trans convention, and
+        # independently verified against ComplexUHF at 4.4e-8% precision
+        # on case_soc_rashba_2d_nosub. See tools/_uhfk_to_mvmc/
+        # trans_emit.py module docstring for the derivation.
         _, site_R_int, norb = load_geometry_uhf(args.geometry)
         if norb != 1:
             print(
@@ -235,6 +334,7 @@ def main(argv=None):
             stepped_occupation, _ = step_occupation(
                 occupation, eigenvalue, column_spin, column_mu_group,
                 T_scf, ne_per_group_general,
+                is_soc_mode=is_soc_mode,
             )
         except OccupationGuardError as e:
             print(f"ERROR (occupation guard): {e}", file=sys.stderr)
@@ -247,6 +347,7 @@ def main(argv=None):
                 column_spin=column_spin,
                 partner_rows=partner_rows,
                 wavevector_index=wavevector_index,
+                is_soc_mode=is_soc_mode,
             )
         except ValueError as e:
             print(f"ERROR (general prerequisites): {e}", file=sys.stderr)
@@ -276,6 +377,7 @@ def main(argv=None):
         )
         pair_list = build_pair_list(
             stepped_occupation, column_spin, canonical, partner_rows,
+            is_soc_mode=is_soc_mode,
         )
         A = build_slater_orbitals(
             wavevector_index=wavevector_index,
@@ -286,6 +388,7 @@ def main(argv=None):
             subshape=subshape_arr,
             theta=theta,
             pair_list=pair_list,
+            is_soc_mode=is_soc_mode,
         )
         F_general = build_fij_general(A)
         params = aggregate_general_orbital_params(
@@ -306,29 +409,133 @@ def main(argv=None):
             try:
                 compare_against_onebodyg_uhf_general(
                     G_all, args.onebodyg_uhf, tol=1e-10,
+                    is_soc_mode=is_soc_mode,
                 )
             except DensityMismatchError as e:
                 print(f"ERROR (density check): {e}", file=sys.stderr)
                 return 3
             print("density check OK (tol 1e-10)")
+        # Codex adversarial review (Rev.1, finding 3): under SOC, both
+        # zqp_orbital_uhfk.dat and trans.def must land atomically as a
+        # pair. A failure in emit_trans_def used to leave a stale zqp on
+        # disk with the pre-existing trans.def next to it, misleading a
+        # subsequent mVMC run. Both temps are committed via os.replace
+        # only after write_zqp_orbital_general AND emit_trans_def both
+        # succeed. Non-SOC path still goes through the same block; the
+        # trans temp is skipped because is_soc_mode is False.
+        #
+        # Codex Rev.2 finding 2: two os.replace calls are not truly atomic
+        # (a failure of the second commit leaves the first landed and
+        # would silently pair a fresh zqp with the previous trans.def).
+        # Preflight the SOC outputs so os.replace only fires against
+        # already-validated destinations: reject same-path collisions
+        # (would silently overwrite each other), reject directory targets
+        # (os.replace can't atomically overwrite a directory with a
+        # file), and reject unwritable parent directories. With these
+        # guards the two os.replace calls are best-effort atomic; a
+        # residual filesystem-level failure (e.g. mid-syscall power loss)
+        # can still split the pair but has no in-process recovery path.
+        if is_soc_mode:
+            out_real = os.path.realpath(args.output)
+            trans_real = os.path.realpath(args.emit_trans)
+            if out_real == trans_real:
+                print(
+                    f"ERROR: --output and --emit-trans resolve to the "
+                    f"same path ({out_real}); they must be distinct.",
+                    file=sys.stderr,
+                )
+                return 2
+            for label, path in (
+                ("output", args.output),
+                ("emit-trans", args.emit_trans),
+            ):
+                if os.path.isdir(path):
+                    print(
+                        f"ERROR: --{label} target {path!r} is an "
+                        "existing directory; must be a file path.",
+                        file=sys.stderr,
+                    )
+                    return 2
+                parent = os.path.dirname(os.path.abspath(path)) or "."
+                if not os.path.isdir(parent):
+                    print(
+                        f"ERROR: --{label} parent directory "
+                        f"{parent!r} does not exist.",
+                        file=sys.stderr,
+                    )
+                    return 2
+                if not os.access(parent, os.W_OK):
+                    print(
+                        f"ERROR: --{label} parent directory "
+                        f"{parent!r} is not writable.",
+                        file=sys.stderr,
+                    )
+                    return 2
         out_path = os.path.abspath(args.output)
         out_dir = os.path.dirname(out_path) or "."
         os.makedirs(out_dir, exist_ok=True)
+        trans_out_path = None
+        trans_tmp_path = None
+        if is_soc_mode:
+            trans_out_path = os.path.abspath(args.emit_trans)
+            trans_out_dir = os.path.dirname(trans_out_path) or "."
+            os.makedirs(trans_out_dir, exist_ok=True)
+            trans_fd, trans_tmp_path = tempfile.mkstemp(
+                prefix=".uhfk_to_mvmc.trans.", suffix=".tmp",
+                dir=trans_out_dir,
+            )
+            os.close(trans_fd)
         tmp_fd, tmp_path = tempfile.mkstemp(
             prefix=".uhfk_to_mvmc.", suffix=".tmp", dir=out_dir,
         )
         os.close(tmp_fd)
+
+        def _cleanup_tmp_outputs():
+            for p in (tmp_path, trans_tmp_path):
+                if p and os.path.exists(p):
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+
         try:
             write_zqp_orbital_general(tmp_path, params)
+            if is_soc_mode:
+                # v3.1 spec §3.8: emit mVMC trans.def from H-wave
+                # Transfer.dat so SOC (Rashba s != t) entries survive
+                # into mVMC's Hamiltonian. Runs only under is_soc_mode
+                # because vmcdry.out already produces a correct
+                # spin-diagonal trans.def for non-SOC v3 A/B fixtures.
+                # v3.2: boundary_theta is threaded so APBC rows acquire
+                # the wrap-phase sign flip at boundary crossings.
+                from tools._uhfk_to_mvmc.trans_emit import (
+                    emit_trans_def, TransEmitError,
+                )
+                try:
+                    emit_trans_def(
+                        args.transfer, cell_shape, trans_tmp_path,
+                        boundary_theta=boundary_theta_tuple,
+                    )
+                except TransEmitError as e:
+                    print(f"ERROR (trans_emit): {e}", file=sys.stderr)
+                    _cleanup_tmp_outputs()
+                    return 2
+            # Both writes succeeded; commit atomically.
             os.replace(tmp_path, out_path)
+            if is_soc_mode:
+                os.replace(trans_tmp_path, trans_out_path)
         except Exception:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+            _cleanup_tmp_outputs()
             raise
         print(
             f"wrote {args.output} "
             f"({info_general['n_orbital_idx']} General params)"
         )
+        if is_soc_mode:
+            print(
+                f"wrote {args.emit_trans} "
+                f"(SOC trans.def with Rashba entries preserved)"
+            )
         return 0
     else:
         print(

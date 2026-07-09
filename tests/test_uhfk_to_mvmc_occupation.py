@@ -111,3 +111,44 @@ def test_sz_free_column_spin_minus_one_fails_fast():
             occupation, eigenvalue, column_spin, column_mu_group,
             0.0, [2],
         )
+
+
+def test_step_occupation_accepts_all_mixed_columns_under_soc_mode():
+    """v3.1 SOC path: column_spin = -1 accepted, lowest Ncond occupied.
+
+    Note: SCF occupation values are 0/1 (T=0 Slater determinant) so
+    the fractional-residual guard (spec 3.5) passes; the intent here is
+    to verify the SOC-mode dispatch bypasses the ``column_spin < 0``
+    reject and that eigenvalue ordering selects the lowest ``Ncond``
+    states regardless of spin label.
+    """
+    # SCF occupation "misaligns" with the eig ordering below, so the
+    # assertions below verify that step_occupation uses eig ordering
+    # (not the input occupation) once the SOC-mode guard is passed.
+    occ = np.array([[0.0, 0.0], [1.0, 1.0]])
+    eig = np.array([[0.0, 0.1], [0.2, 0.3]])
+    col_spin = np.array([-1, -1], dtype=np.int64)
+    col_mu = np.array([0, 0], dtype=np.int64)
+    stepped, summary = step_occupation(
+        occ, eig, col_spin, col_mu, T=0.0,
+        ncond_per_group=[2],
+        is_soc_mode=True,
+    )
+    # Lowest 2 eigenvalues (0.0 at [0,0] and 0.1 at [0,1]) get occ=1
+    assert stepped[0, 0] == 1.0
+    assert stepped[0, 1] == 1.0
+    assert stepped[1, 0] == 0.0
+    assert stepped[1, 1] == 0.0
+    assert summary["ne_per_group"] == [2]
+
+
+def test_step_occupation_rejects_mixed_columns_without_soc_mode():
+    """v3 path: column_spin = -1 without is_soc_mode still raises."""
+    with pytest.raises(OccupationGuardError, match="column_spin = -1"):
+        step_occupation(
+            np.zeros((2, 2)), np.zeros((2, 2)),
+            np.array([-1, -1], dtype=np.int64),
+            np.array([0, 0], dtype=np.int64),
+            0.0, [2],
+            is_soc_mode=False,
+        )

@@ -54,6 +54,26 @@ Scope (v3):
   Mirrors the same trick mVMC's own ComplexUHF uses
   (``mVMC-1.4.0/src/ComplexUHF/output.c:274``).
 
+Scope (v3.1)
+^^^^^^^^^^^^
+
+- **Sz-free mixed block (SOC, ``enable_spin_orbital = true``)** →
+  General-SOC path. Consumes ``orbitalidx_general.def`` (6-column) and
+  emits Sz-non-conserving ``F[up_i, down_j]`` / ``F[down_i, up_j]``
+  entries. Supports Zeeman, Rashba, Dresselhaus and general
+  σ_x/σ_y 1-body couplings.
+- ``enable_spin_orbital = true`` + APBC combination is **deferred to
+  v3.2**. Dispatch fails fast with a clear error.
+- ``SubShape > [1, 1, 1]`` combined with SOC is **deferred to v3.2**.
+  StdFace's ``orbitalidxgen.def`` classes assume full-lattice
+  translation invariance, which SOC breaks under sublattice folding.
+- Bridge validates ``eigen.npz["twist_offset"]`` against the
+  canonicalized ``BoundaryCondition`` from ``input.toml`` to catch
+  stale input/eigen pairings.
+- Bridge additionally emits ``trans.def`` from H-wave's ``Transfer.dat``
+  under SOC (see below) — mVMC's ``vmcdry.out`` cannot preserve
+  spin-off-diagonal Rashba transfer entries.
+
 Workflow
 ^^^^^^^^
 
@@ -110,6 +130,67 @@ The CLI parses ``--orbitalidx`` first and picks the code path from
 0 in ``input.toml``, ``N_up == N_down``, ``column_spin ∈ {0, 1}``,
 ``column_mu_group`` has exactly 2 unique values, and column_spin↔mu_group
 is bijective.
+
+Dispatch (v3.1, 6-case)
+^^^^^^^^^^^^^^^^^^^^^^^
+
+The CLI computes ``is_soc_mode = toml_param.get("enable_spin_orbital",
+False)`` after parsing ``input.toml``, then routes on
+``(is_antiparallel_metadata, orbitalidx_format, is_soc_mode)``:
+
+- ``(True, antiparallel, False)`` — v2.1 AntiParallel (unchanged).
+- ``(True, general, False)`` — v3 forced-General.
+- ``(False, general, False)`` — v3 General (A/B).
+- ``(False, antiparallel, False)`` — rejected.
+- ``(\*, general, True)`` — **v3.1 General-SOC**.
+- ``(\*, antiparallel, True)`` — rejected (SOC requires 6-column).
+
+BoundaryCondition contract (v3.1)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The bridge canonicalizes ``BoundaryCondition`` through H-wave's shared
+``normalize_boundary_condition`` helper. Accepted forms:
+
+- PBC: ``"p"``, ``"periodic"`` (case-insensitive, whitespace-stripped)
+- APBC: ``"ap"``, ``"antiperiodic"`` (same)
+
+Every other string raises a ``ValueError`` before dispatch; no raw
+fallback exists. Omitting the key defaults to all-PBC.
+
+Bridge trans.def emitter (v3.1 SOC only)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Under SOC, mVMC's ``vmcdry.out`` builds ``trans.def`` via
+``StdFace_Hopping`` which is strictly spin-diagonal and drops Rashba
+``s != t`` transfer entries. To close the gap, the bridge reads
+H-wave's ``Transfer.dat`` (Wannier90-like format,
+``iWan = 2 * a_phys + spin + 1``) and emits mVMC's ``trans.def`` with
+``(i, s, j, t, re, im)`` rows preserving Rashba off-diagonal spin.
+
+Sign convention (empirically pinned):
+
+- ``s == t`` (NN hopping): ``trans = -val_hwave`` (matches vmcdry's
+  own sign flip).
+- ``s != t`` (Rashba): ``trans = +val_hwave``.
+
+The mixed convention is calibrated against
+``tests/validation/uhfk_mvmc_pairproduct/case_soc_rashba_2d_nosub``
+E2E; a uniform flip (``-val`` on both) produces 42.58% ⟨H⟩ delta.
+Re-verify this convention after any mVMC upgrade — the mVMC-side
+mechanism cites ``locgrn_fsz.c:128`` which mVMC's own author marked
+``//TBC``.
+
+New CLI flags (SOC-only): ``--transfer <path>`` and
+``--emit-trans <path>``.
+
+Out of scope for v3.1
+^^^^^^^^^^^^^^^^^^^^^
+
+- SOC + APBC combination (deferred to v3.2). Dispatch rejects.
+- SOC + ``SubShape > [1, 1, 1]`` combination (deferred to v3.2).
+- 2-body Sz-non-conserving interactions (spin-flip Coulomb,
+  Hund coupling, pair hopping). CoulombIntra (on-site U) remains
+  the only supported 2-body term.
 
 Class-consistency check (v3 General)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
