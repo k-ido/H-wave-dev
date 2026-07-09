@@ -10,65 +10,49 @@ Behaviour in one line: for each Transfer.dat entry we emit
 ``s == t: -val_hwave`` and ``s != t: +val_hwave`` (see
 ``DEFAULT_SIGN_DIAG`` / ``DEFAULT_SIGN_OFFDIAG``).
 
-Sign convention (derived, not empirical)
-----------------------------------------
-The mixed convention ``(sign_diag = -1, sign_offdiag = +1)`` is a
-derivable consequence of three composing conventions:
+Sign convention (empirically pinned)
+------------------------------------
+The mixed convention ``(sign_diag = -1, sign_offdiag = +1)`` is
+empirically pinned against ComplexUHF on
+``case_soc_rashba_2d_nosub`` (SubShape = [1, 1, 1] + SOC): ComplexUHF
+started from a random Green function converges on the emitted
+``trans.def`` to H-wave's ``<H>`` at 4.4e-8% precision, i.e. the sign
+convention is correct to machine round-off in the H-Hamiltonian sense
+for that fixture. Any residual delta on the mVMC side (currently
+~0.20% at NVMCSample=10000) is VMC statistical noise, not a sign bug.
 
-1. **H-wave's internal swap** (``src/hwave/sc.py:250-255``): a
-   ``Transfer.dat`` input row ``(R, iWan, jWan, val)`` is stored as
-   ``epsilon_k[jWan-1, iWan-1] = val * exp(i k . R)``. The
-   ``epsilon_k[a, b]`` slot is the coefficient of ``c^dag_a c_b`` in
-   the k-space Hamiltonian, so the physical Hamiltonian coefficient
-   attached to the input row is, in real space,
-   ``val * c^dag_{spin(jWan)}(r + R) c_{spin(iWan)}(r)`` (indices
-   swapped relative to a "naive" reading of the row).
+An earlier version of this docstring claimed the sign convention was
+derivable from ``src/hwave/sc.py:250-255`` (an ``epsilon_k[orb2, orb1]``
+swap). That swap is real in ``sc.py`` (a separate solver), but
+``uhfk.py:1143-1144`` does NOT perform the same swap — it stores
+``tab_r[(*irvec, *orbvec)] = v`` directly, no index reversal. So the
+"derived from H-wave's internal swap" story does not apply to the
+UHFk path this bridge consumes. The sign convention that ships here
+is the one that empirically produces the ComplexUHF match on the
+non-sublattice SOC fixture; the derivation is deferred until an
+independent audit of the full UHFk Fourier + folded-orbital
+convention chain nails down which composition of signs is at play.
 
-2. **Wannier90-style emission** (``tests/validation/uhfk_mvmc_pairproduct/
-   scripts/emit_rashba_transfer.py``): the emitter writes rows with
-   ``iWan`` / ``jWan`` chosen so that after H-wave's swap the stored
-   ``epsilon_k`` matches the intended physical Hamiltonian. This means
-   the pair ``(iWan, jWan)`` on the row corresponds to ``(s_src, s_tgt) =
-   (spin(iWan), spin(jWan))`` of the ``c^dag_{s_src} c_{s_tgt}`` operator
-   the user meant to encode.
-
-3. **mVMC/ComplexUHF trans.def convention**: the evaluator interprets
-   ``trans.def`` as
-   ``H_mVMC = -sum trans(i, s, j, t) c^dag_{i, s} c_{j, t}``. The leading
-   minus sign is the mVMC-side inversion the emitter must undo to match
-   H-wave's stored coefficient.
-
-Under trans_emit's mapping ``(iWan, jWan) -> (i_site = r,
-s_src = spin(iWan), j_site = r + R, s_tgt = spin(jWan))`` (the physical
-site expansion the emitter performs):
-
-- **s == t** rows: H-wave's internal swap is a no-op for spin-diagonal
-  terms (``jWan`` and ``iWan`` land in the same spin sector), so the
-  stored coefficient equals the input ``val``. Cancelling mVMC's leading
-  minus requires ``trans = -val_hwave``. This mapping is also
-  byte-verified against ``vmcdry.out``'s spin-diagonal ``trans.def``:
-  ``t = 1.0`` in ``stan.in`` produces ``T = -1`` in H-wave's
-  ``Transfer.dat`` and ``+1`` in mVMC's ``trans.def``.
-
-- **s != t** rows: H-wave's swap effectively conjugates the operator
-  (``c^dag_{s_src} c_{s_tgt}`` maps to ``c^dag_{s_tgt} c_{s_src}`` in
-  the stored ``epsilon_k`` slot), which for Rashba SOC contributes an
-  additional sign flip in the imaginary part. Composed with mVMC's
-  leading minus, the two flips cancel and the net convention is
-  ``trans = +val_hwave``.
-
-Verification
-------------
-ComplexUHF (which shares mVMC's ``trans.def`` format) reproduces
-H-wave's UHF ``<H>`` to **4.4e-8%** precision on
-``case_soc_rashba_2d_nosub`` when fed the trans.def emitted by this
-module. That agreement is at the same level as ComplexUHF's own
-floating-point round-off vs H-wave's SCF, i.e. the sign convention is
-correct to machine precision in the H-Hamiltonian sense. Any residual
-delta on the mVMC side (currently ~0.20% at NVMCSample=10000) is VMC
-statistical noise, not a WF or sign bug. See
-``docs/superpowers/specs/2026-07-01-uhfk-mvmc-pairproduct-general-v31-design.md``
-§3.8 for the full derivation.
+Verification scope
+------------------
+- ``case_soc_rashba_2d_nosub`` (SubShape [1, 1, 1] + SOC): the emitted
+  ``trans.def`` matches ComplexUHF's SCF at 4.4e-8%. Verified.
+- ``case_soc_rashba_2d_nosub_apbc`` (SubShape [1, 1, 1] + SOC + APBC):
+  end-to-end match at VMC precision. Verified.
+- ``case_soc_rashba_2d_sub`` (SubShape [2, 2, 1] + SOC): the emitted
+  ``trans.def`` STILL matches ComplexUHF at ~0.15% (ComplexUHF from
+  random init converges to E=-25.14 vs H-wave -25.10 on the same
+  trans.def), so the Hamiltonian coefficients emitted by this module
+  are correct for that fixture too. The reason the E2E energy compare
+  is skipped for this case is a separate bug on the
+  ``build_slater_orbitals`` (WF construction) path under SOC +
+  SubShape > [1, 1, 1] — the emitted ``zqp_orbital_uhfk.dat`` encodes
+  a Slater whose diagonal density matches H-wave's ``green_sublattice``
+  but whose off-diagonal cross-spin entries are wrong, so mVMC's
+  ``<H>`` on that WF disagrees with H-wave's ``Energy_Total`` by ~17.
+  See ``docs/superpowers/specs/2026-07-01-uhfk-mvmc-pairproduct-general-v31-design.md``
+  §3.8 and the SOC + SubShape > 1 note in
+  ``tests/validation/uhfk_mvmc_pairproduct/run.sh``.
 """
 from __future__ import annotations
 
@@ -76,11 +60,12 @@ import numpy as np
 
 from hwave.solver._apbc_phase import inverse_gauge_phase
 
-# Sign multipliers applied per emitted trans.def row. See the module
-# docstring for the derivation from H-wave's internal swap +
-# Wannier90-style emission + mVMC's H = -sum trans convention.
-# ComplexUHF verified at 4.4e-8% agreement with H-wave on
-# case_soc_rashba_2d_nosub.
+# Sign multipliers applied per emitted trans.def row. Empirically pinned:
+# ComplexUHF SCF on the emitted trans.def matches H-wave's <H> to
+# 4.4e-8% on case_soc_rashba_2d_nosub (SubShape [1, 1, 1] + SOC) and to
+# ~0.15% on case_soc_rashba_2d_sub (SubShape [2, 2, 1] + SOC) at
+# random-init SCF from the emitted Hamiltonian. See the module docstring
+# for verification scope and the aborted "derived from sc.py swap" story.
 DEFAULT_SIGN_DIAG = -1.0
 DEFAULT_SIGN_OFFDIAG = +1.0
 
@@ -288,11 +273,13 @@ def emit_trans_def(
     sign_offdiag : float, optional
         Multiplier applied to spin-off-diagonal (``s_src != s_tgt``,
         Rashba) entries. Defaults to ``DEFAULT_SIGN_OFFDIAG`` (``+1.0``);
-        this is derived from H-wave's internal ``epsilon_k[jWan-1,
-        iWan-1]`` swap composed with mVMC's ``H = -sum trans``
-        convention, and independently verified against ComplexUHF at
-        4.4e-8% precision on ``case_soc_rashba_2d_nosub``. See the
-        module docstring for the derivation.
+        this value is **empirically pinned** via ComplexUHF verification
+        at 4.4e-8% precision on ``case_soc_rashba_2d_nosub``. An earlier
+        attempt to derive it from H-wave's ``sc.py`` ``epsilon_k[orb2,
+        orb1]`` index swap does NOT apply: ``uhfk.py`` does not perform
+        that swap (see uhfk.py:1143-1144). Re-verify against the E2E
+        harness after any mVMC or H-wave version bump. See the module
+        docstring for the empirical basis.
     boundary_theta : array-like of length 3 or None, optional
         Twist ``(theta_x, theta_y, theta_z)`` in radians. ``None``
         (default) means all-PBC and no boundary phase is applied.

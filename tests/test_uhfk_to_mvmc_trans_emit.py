@@ -326,13 +326,13 @@ def test_sign_convention_is_pinned_at_diag_minus_offdiag_plus():
     """Guard against silent sign-convention drift.
 
     The mixed sign convention (sign_diag=-1, sign_offdiag=+1) is
-    derived from H-wave's internal epsilon_k[jWan-1, iWan-1] swap
-    (src/hwave/sc.py:250-255) composed with mVMC's H = -sum trans
-    convention; ComplexUHF verified at 4.4e-8% precision on
-    case_soc_rashba_2d_nosub. See trans_emit.py module docstring for
-    the derivation. This test reads the module-level defaults so a
-    code change to either flag surfaces here rather than only via the
-    E2E harness."""
+    empirically pinned via ComplexUHF verification at 4.4e-8% precision
+    on case_soc_rashba_2d_nosub. An earlier attempt to derive it from
+    H-wave's sc.py epsilon_k[orb2, orb1] swap does NOT apply because
+    uhfk.py:1143-1144 does not perform that swap. See trans_emit.py
+    module docstring for the empirical basis. This test reads the
+    module-level defaults so a code change to either flag surfaces
+    here rather than only via the E2E harness."""
     from tools._uhfk_to_mvmc.trans_emit import (
         DEFAULT_SIGN_DIAG,
         DEFAULT_SIGN_OFFDIAG,

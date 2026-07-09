@@ -62,17 +62,80 @@ Scope (v3.1)
   emits Sz-non-conserving ``F[up_i, down_j]`` / ``F[down_i, up_j]``
   entries. Supports Zeeman, Rashba, Dresselhaus and general
   σ_x/σ_y 1-body couplings.
-- ``enable_spin_orbital = true`` + APBC combination is **deferred to
-  v3.2**. Dispatch fails fast with a clear error.
-- ``SubShape > [1, 1, 1]`` combined with SOC is **deferred to v3.2**.
-  StdFace's ``orbitalidxgen.def`` classes assume full-lattice
-  translation invariance, which SOC breaks under sublattice folding.
 - Bridge validates ``eigen.npz["twist_offset"]`` against the
   canonicalized ``BoundaryCondition`` from ``input.toml`` to catch
   stale input/eigen pairings.
 - Bridge additionally emits ``trans.def`` from H-wave's ``Transfer.dat``
   under SOC (see below) — mVMC's ``vmcdry.out`` cannot preserve
   spin-off-diagonal Rashba transfer entries.
+
+Scope (v3.2)
+^^^^^^^^^^^^
+
+- **SOC + APBC** is now supported end-to-end. The trans.def emitter
+  threads ``boundary_theta`` from ``BoundaryCondition``: rows whose
+  ``(R_x, R_y, R_z)`` crosses a boundary along an APBC direction pick
+  up the physical wrap-phase (``exp(i theta_d)`` for a positive-``R``
+  crossing, ``exp(-i theta_d)`` for a negative-``R`` crossing; ``theta_d
+  = pi`` in APBC directions). Like the base SOC sign convention
+  (see the "Sign convention" note below), the wrap-phase convention
+  is **empirically pinned** via E2E verification in
+  ``tests/validation/uhfk_mvmc_pairproduct/case_soc_rashba_2d_nosub_apbc``
+  (mVMC ⟨H⟩ within 0.03% of H-wave UHF); a first-principles derivation
+  from H-wave's internal conventions does not go through cleanly on the
+  UHFk path — see ``tools/_uhfk_to_mvmc/trans_emit.py`` module docstring.
+- **SOC + SubShape > [1, 1, 1]** was deferred at v3.4 (Codex v3.4
+  Rev.2 finding: the dual-A density gate could not validate the
+  shipping A/F because the reference A dropped ``sub_offset`` from
+  the plane-wave phase). v3.5 restores this path via a gauge-lifted
+  single-A density check that validates the SHIPPING A directly —
+  see "Scope (v3.5)" below.
+- **SOC + APBC + SubShape > [1, 1, 1]** triple combination remains
+  deferred beyond v3.5 (Rev.1 finding 2: no E2E fixture; the composed
+  phase path from SOC + APBC and SOC + SubShape has not been
+  independently validated). The CLI fail-fasts pre-dispatch when
+  ``enable_spin_orbital = true``, an antiperiodic ``BoundaryCondition``
+  entry, and ``SubShape > [1, 1, 1]`` are all set.
+- The v3.1 SOC ``trans.def`` sign convention remains **empirically
+  pinned**: an earlier attempt to derive it from H-wave's ``epsilon_k``
+  swap composed with mVMC's ``H = -sum trans`` was found not to apply
+  to the UHFk path (``uhfk.py`` does not perform the same
+  ``epsilon_k[orb2, orb1]`` swap that ``sc.py`` does). The convention
+  that ships is re-verified against ComplexUHF at 4.4e-8% agreement on
+  ``case_soc_rashba_2d_nosub``. See ``tools/_uhfk_to_mvmc/trans_emit.py``
+  module docstring for the empirical basis and the aborted derivation
+  attempt.
+
+Scope (v3.5)
+^^^^^^^^^^^^
+
+- **SOC + SubShape > [1, 1, 1]** is now shippable in v3.5 via the
+  gauge-lifted density check
+  ``compare_against_green_sublattice(..., is_soc_sublattice_mode=True)``
+  at 1e-10 element-wise tolerance. The check LIFTS H-wave's
+  ``green_sublattice`` (folded-Bloch basis) into the physical basis via
+  ``gauge_lift`` and compares element-wise to the SHIPPING
+  ``conj(A) @ A.T`` — the same A that is emitted to mVMC — closing the
+  v3.4 dual-A hole. The gauge transform relates the shipping A's phase
+  ``exp(-i k · (folded_cell + sub_offset))`` to
+  ``green_sublattice``'s folded-Bloch storage; the derivation is in
+  ``docs/superpowers/specs/2026-07-05-uhfk-mvmc-pairproduct-general-v35-design.md``
+  §2-3 (note: ``docs/superpowers/`` is gitignored and ships out-of-tree,
+  so the spec is not vendored with the release). The v3.4
+  ``_soc_reference_convention`` escape hatch has been removed; only the
+  shipping-convention A remains in the codebase.
+- **SOC + APBC + SubShape > [1, 1, 1]** triple combination remains
+  rejected (unvalidated composed phase path; no E2E fixture — see
+  "Scope (v3.2)" above).
+- Required CLI flags under SOC + SubShape > [1, 1, 1]: ``--transfer``
+  (to read H-wave's ``Transfer.dat``), ``--emit-trans`` (to write
+  mVMC's ``trans.def`` with Rashba off-diagonal spin preserved), and
+  ``--emit-orbitalidx`` (to bypass StdFace's class merging, which
+  cannot express Sz-non-conserving classes under a folded lattice —
+  see the v3.2 spec §1 rationale).
+- Empirical E2E: ``case_soc_rashba_2d_sub`` mVMC ⟨H⟩ vs H-wave
+  ``Energy_Total`` at 0.22% delta (delta -0.055 out of 25.10) with the
+  gauge-lifted density gate clean at 1e-10.
 
 Workflow
 ^^^^^^^^
@@ -173,21 +236,33 @@ Sign convention (empirically pinned):
   own sign flip).
 - ``s != t`` (Rashba): ``trans = +val_hwave``.
 
-The mixed convention is calibrated against
-``tests/validation/uhfk_mvmc_pairproduct/case_soc_rashba_2d_nosub``
-E2E; a uniform flip (``-val`` on both) produces 42.58% ⟨H⟩ delta.
-Re-verify this convention after any mVMC upgrade — the mVMC-side
-mechanism cites ``locgrn_fsz.c:128`` which mVMC's own author marked
-``//TBC``.
+The mixed convention ``(sign_diag = -1, sign_offdiag = +1)`` is
+**empirically pinned** via ComplexUHF verification at 4.4e-8% agreement
+on ``case_soc_rashba_2d_nosub``. The mVMC convention is
+``H = -Σ trans c†c``, but the exact interaction between the
+source-target index convention and H-wave's k-space Hamiltonian is
+**not derivable from first principles alone** in this bridge — see
+``tools/_uhfk_to_mvmc/trans_emit.py`` module docstring for the empirical
+basis and the aborted "derived from H-wave's ``sc.py`` swap" story
+(``sc.py`` performs an ``epsilon_k[orb2, orb1]`` swap that ``uhfk.py``
+does not perform, so the swap-derivation does not compose through).
+A uniform flip (``-val`` on both) produces a 42.58% ⟨H⟩ delta on the
+same fixture. **Re-verify against ``case_soc_rashba_2d_nosub`` E2E after
+any mVMC or H-wave version bump** — the mVMC-side mechanism cites
+``locgrn_fsz.c:128`` which mVMC's own author marked ``//TBC``.
 
 New CLI flags (SOC-only): ``--transfer <path>`` and
 ``--emit-trans <path>``.
 
-Out of scope for v3.1
+Out of scope for v3.5
 ^^^^^^^^^^^^^^^^^^^^^
 
-- SOC + APBC combination (deferred to v3.2). Dispatch rejects.
-- SOC + ``SubShape > [1, 1, 1]`` combination (deferred to v3.2).
+- SOC + APBC + ``SubShape > [1, 1, 1]`` triple combination is deferred
+  beyond v3.5 (Rev.1 finding 2: no E2E fixture; the composed phase path
+  from SOC + APBC and SOC + SubShape has not been independently
+  validated). The two-way subsets are covered:
+  ``case_soc_rashba_2d_nosub_apbc`` for SOC + APBC (0.03% delta) and
+  ``case_soc_rashba_2d_sub`` for SOC + SubShape (0.22% delta).
 - 2-body Sz-non-conserving interactions (spin-flip Coulomb,
   Hund coupling, pair hopping). CoulombIntra (on-site U) remains
   the only supported 2-body term.
@@ -212,6 +287,18 @@ Density-check (recommended)
 physical-basis ``greenone.dat`` output (tolerance 1e-10). A mismatch is
 fatal and indicates a bug in either H-wave's APBC handling, the bridge,
 or the geometry assumption.
+
+Under SOC + SubShape > [1, 1, 1] the density check switches to
+``compare_against_green_sublattice(..., is_soc_sublattice_mode=True)``
+at 1e-10 (H-wave's ``greenone.dat`` fold path is known-buggy on this
+combination; ``green_sublattice`` is the source of truth). The check
+LIFTS H-wave's ``green_sublattice`` into the physical basis via
+``gauge_lift`` and compares element-wise against the SHIPPING
+``conj(A) @ A.T`` — the same A that is emitted to mVMC — so a
+regression in the shipping-A path cannot silently pass. This restores
+the density gate that was closed in v3.4 (dual-A hole) via the gauge
+lift derived in the v3.5 spec (§2-3); the v3.4
+``_soc_reference_convention`` escape hatch has been removed.
 
 Exit codes
 ^^^^^^^^^^

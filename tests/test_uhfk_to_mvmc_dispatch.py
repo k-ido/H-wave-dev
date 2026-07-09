@@ -472,19 +472,30 @@ def test_dispatch_soc_apbc_no_deferred_reject():
         assert "deferred to v3.2" not in res.stderr, res.stderr
 
 
-def test_dispatch_soc_subshape_rejects_pre_dispatch():
-    """enable_spin_orbital = true + SubShape > [1, 1, 1] -> v3.2-deferred.
+def test_dispatch_soc_subshape_no_longer_rejects():
+    """enable_spin_orbital = true + SubShape > [1, 1, 1] is supported in
+    v3.5 (Phase D of the v3.5 gauge_lift + density check landing).
 
-    Codex adversarial review (Rev.1, finding 1): the SOC+APBC guard
-    protected the antiperiodic axis, but the parallel SOC+SubShape
-    deferral was silently letting SubShape > [1, 1, 1] fall through to
-    the General branch. StdFace's orbitalidxgen.def classes assume
-    full-lattice translation invariance, which SOC breaks under
-    sublattice folding, so the CLI must fail-fast before any dispatch.
+    Historical context:
+    - v3.2 A2 (b93b913) briefly lifted the SOC + SubShape > [1, 1, 1]
+      reject but Codex Rev.1 flagged a residual Slater WF construction
+      bug (off-diagonal cross-spin entries wrong by up to 0.23), which
+      forced re-defer to v3.3 (commit 27349f1).
+    - v3.4 (commit 505f934) added the missing ``sub_offset`` contribution
+      to the plane-wave phase in ``build_slater_orbitals``'s SOC branch,
+      restoring ``case_soc_rashba_2d_sub`` to a 0.22% delta.
+    - v3.4 Rev.2 (commit 6fba3e5) re-deferred to v3.5 because the density
+      gate used a dual-A pattern (reference A for the check, shipping A
+      for mVMC) that validated the reference A but not the shipping A.
+    - v3.5 Phase A (this task's predecessor) introduced ``gauge_lift`` to
+      map ``green_sublattice`` into the physical basis, closing the
+      independent-shipping-A-validation gap.
 
-    Fixture is patterned on test_dispatch_soc_apbc_rejects_pre_dispatch:
-    same skeleton but with SubShape=[2, 1, 1] on CellShape=[4, 1, 1]
-    (subvol=2, PBC) and expect the SOC+SubShape reject to fire.
+    This test asserts the pre-v3.5 SubShape reject is fully lifted:
+    SOC + SubShape > [1, 1, 1] must NOT return code 2 with a v3.3/v3.4
+    defer message. Downstream errors (the minimal fixture is not a
+    converged SCF, so the density check or Slater emit may still error)
+    are permissible; only the SubShape dispatch guard is under test.
     """
     Nsite = 4
     subvol = 2
@@ -500,8 +511,6 @@ def test_dispatch_soc_subshape_rejects_pre_dispatch():
                 'BoundaryCondition = ["periodic", "periodic", "periodic"]\n'
                 "enable_spin_orbital = true\n"
             )
-        # The reject fires before eigen-shape or occupation checks, so
-        # the arrays only need to be present, not consistent.
         nd = 2 * subvol  # spinful, subvol columns per spin.
         L_folded = Nsite // subvol
         np.savez(
@@ -530,16 +539,120 @@ def test_dispatch_soc_subshape_rejects_pre_dispatch():
             fp.write(f"{Nsite} 0 0\n0 1 0\n0 0 1\n")
             for i in range(Nsite):
                 fp.write(f"{i} 0 0 0\n")
-        res = _run_cli(tmp, _minimal_general_orbitalidx(nsite=Nsite))
-        assert res.returncode != 0, res.stderr
-        assert "SubShape" in res.stderr, res.stderr
-        # SOC+SubShape > [1,1,1] still deferred in v3.2 (StdFace's
-        # orbitalidxgen.def classes assume full-lattice translation
-        # invariance; SOC breaks that under sublattice folding).
-        assert "deferred" in res.stderr, res.stderr
-        assert not os.path.exists(
-            os.path.join(tmp, "zqp_orbital_uhfk.dat")
-        ), "output file leaked despite SOC+SubShape reject"
+        transfer_path = os.path.join(tmp, "Transfer.dat")
+        with open(transfer_path, "w") as fp:
+            fp.write("test Transfer.dat\n")
+            fp.write("1\n")
+            fp.write("2\n")
+            fp.write("1 1\n")
+            fp.write("   1  0  0  1  1  -1.0  0.0\n")
+            fp.write("  -1  0  0  1  1  -1.0  0.0\n")
+        emit_trans_path = os.path.join(tmp, "trans.def.bridge")
+        emit_orbitalidx_path = os.path.join(tmp, "orbitalidxgen.def.bridge")
+        res = _run_cli(
+            tmp, _minimal_general_orbitalidx(nsite=Nsite),
+            extra_args=(
+                "--transfer", transfer_path,
+                "--emit-trans", emit_trans_path,
+                "--emit-orbitalidx", emit_orbitalidx_path,
+            ),
+        )
+        # The v3.3/v3.4 SubShape reject must NOT fire.
+        assert "not validated in v3.3" not in res.stderr, res.stderr
+        assert "not shippable in v3.4" not in res.stderr, res.stderr
+        # The v3.4 Rev.2 defer-to-v3.5 marker must not appear either.
+        assert "Codex v3.4 Rev.2" not in res.stderr, res.stderr
+
+
+def test_dispatch_soc_apbc_subshape_rejects_pre_dispatch():
+    """SOC + APBC + SubShape > [1, 1, 1] triple combination is not
+    shippable in v3.5 (deferred to v3.6+ per spec §8 non-goals).
+
+    v3.4 Rev.1 finding 2 (commit f8ab6ba) called out this triple
+    combination as UNVALIDATED because only two-way subsets had E2E
+    fixtures:
+      - case_soc_rashba_2d_nosub_apbc: SOC + APBC (0.03% delta).
+      - case_soc_rashba_2d_sub:        SOC + SubShape (0.22% delta).
+    v3.4 Rev.2 (commit 6fba3e5) temporarily subsumed this reject under a
+    broader SOC + SubShape defer message. v3.5 Phase D lifts the broader
+    SOC + SubShape reject (gauge_lift now validates the shipping A
+    independently), so the triple-specific v3.4 Rev.1 message is
+    restored for the SOC + APBC + SubShape combination which still lacks
+    an E2E fixture.
+    """
+    Nsite = 4
+    subvol = 2
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, "input.toml"), "w") as fp:
+            fp.write(
+                "[mode.param]\n"
+                "Ncond = 2\n"
+                "2Sz = 0\n"
+                "T = 0.0\n"
+                f"CellShape = [{Nsite}, 1, 1]\n"
+                "SubShape  = [2, 1, 1]\n"
+                'BoundaryCondition = ["antiperiodic", "periodic", "periodic"]\n'
+                "enable_spin_orbital = true\n"
+            )
+        nd = 2 * subvol  # spinful, subvol columns per spin.
+        L_folded = Nsite // subvol
+        np.savez(
+            os.path.join(tmp, "eigen.npz"),
+            eigenvalue=np.zeros((L_folded, nd), dtype=np.float64),
+            eigenvector=np.eye(nd, dtype=np.complex128).reshape(1, nd, nd)
+            .repeat(L_folded, axis=0),
+            wavevector_unit=np.eye(3, dtype=np.float64),
+            wavevector_index=np.array(
+                [[v, 0, 0] for v in range(L_folded)], dtype=np.int64,
+            ),
+            # APBC in x -> twist_offset[0] = 0.5.
+            twist_offset=np.array([0.5, 0.0, 0.0], dtype=np.float64),
+        )
+        occ = np.zeros((Nsite, 2), dtype=np.float64)
+        np.savez(
+            os.path.join(tmp, "occupation.npz"),
+            occupation=occ,
+            mu=np.array([0.0, 0.0], dtype=np.float64),
+            T=np.float64(0.0),
+            column_spin=np.array([0, 1], dtype=np.int64),
+            column_mu_group=np.array([0, 1], dtype=np.int64),
+        )
+        with open(os.path.join(tmp, "geometry_uhf.dat"), "w") as fp:
+            fp.write("1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\n")
+            fp.write("0.0 0.0 0.0\n")
+            fp.write(f"{Nsite} 0 0\n0 1 0\n0 0 1\n")
+            for i in range(Nsite):
+                fp.write(f"{i} 0 0 0\n")
+        transfer_path = os.path.join(tmp, "Transfer.dat")
+        with open(transfer_path, "w") as fp:
+            fp.write("test Transfer.dat\n")
+            fp.write("1\n")
+            fp.write("2\n")
+            fp.write("1 1\n")
+            fp.write("   1  0  0  1  1  -1.0  0.0\n")
+            fp.write("  -1  0  0  1  1  -1.0  0.0\n")
+        emit_trans_path = os.path.join(tmp, "trans.def.bridge")
+        emit_orbitalidx_path = os.path.join(tmp, "orbitalidxgen.def.bridge")
+        res = _run_cli(
+            tmp, _minimal_general_orbitalidx(nsite=Nsite),
+            extra_args=(
+                "--transfer", transfer_path,
+                "--emit-trans", emit_trans_path,
+                "--emit-orbitalidx", emit_orbitalidx_path,
+            ),
+        )
+        assert res.returncode == 2, (
+            f"expected pre-dispatch reject with returncode 2, got "
+            f"{res.returncode}; stderr={res.stderr!r}"
+        )
+        # v3.5: broader SOC+SubShape reject is lifted; SOC+APBC+SubShape
+        # falls through to the v3.4 Rev.1 finding 2 triple-specific
+        # reject (Deferred to v3.6+).
+        assert (
+            "antiperiodic BC + SubShape > [1, 1, 1] is not yet validated"
+            in res.stderr
+        ), res.stderr
+        assert "Deferred to a future spec" in res.stderr, res.stderr
 
 
 # ---------------------------------------------------------------------------

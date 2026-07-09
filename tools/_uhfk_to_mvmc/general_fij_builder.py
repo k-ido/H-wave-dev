@@ -383,6 +383,14 @@ def build_slater_orbitals(
     v3's spin-labelled dicts. H-wave's interleaved eigenvector row
     ``2 * a_folded + spin`` is permuted to spin-block order at read
     time; every (r_phys, spin) row is populated per pair column.
+
+    Under SOC + SubShape > [1, 1, 1], the plane-wave phase carries the
+    intra-cell displacement via ``folded_cell + sub_offset`` (see v3.4
+    fix below). This is the single shipping convention; the v3.5 density
+    gate (``compare_against_green_sublattice(is_soc_sublattice_mode=True)``)
+    validates the shipping A directly by lifting ``green_sublattice`` to
+    the physical basis via ``gauge_lift``, so no dual-A / reference-A
+    scaffold is required.
     """
     from .sublattice_unfold import (
         decode_physical_site,
@@ -408,12 +416,16 @@ def build_slater_orbitals(
     inv_sqrt = 1.0 / np.sqrt(float(nvol_folded))
     theta_over_L = theta / L_phys
 
-    # Pre-compute per-site (folded_cell, folded_orb) for row lookup.
+    # Pre-compute per-site (folded_cell, sub_offset, folded_orb) for row
+    # lookup. sub_offset is retained separately because the SOC branch
+    # plane-wave uses ``folded_cell + sub_offset`` (see v3.4 fix below).
     folded_cell = np.empty((Ns_phys, 3), dtype=np.int64)
+    sub_offset_per_site = np.empty((Ns_phys, 3), dtype=np.int64)
     folded_orb_per_site = np.empty(Ns_phys, dtype=np.int64)
     for i in range(Ns_phys):
         fc, so = decode_physical_site(site_positions[i], subshape)
         folded_cell[i] = fc
+        sub_offset_per_site[i] = so
         folded_orb_per_site[i] = encode_folded_orbital(0, so, 1, subshape)
 
     # Pre-compute per-site physical gauge factor exp(+i theta r_i / L_phys).
@@ -466,8 +478,27 @@ def build_slater_orbitals(
             2.0 * np.pi
             * wavevector_index.astype(np.float64) / L_folded
         )
-        kf_dot_fc = np.einsum(
-            "kd,id->ki", k_folded_all, folded_cell.astype(np.float64)
+        # v3.4 SOC + SubShape > [1, 1, 1] plane-wave fix. Under
+        # ``SubShape > [1, 1, 1]`` H-wave's k-space Hamiltonian folds the
+        # original lattice into a supercell where each folded cell holds
+        # ``subvol`` sublattice slots. Reconstructing the physical Bloch
+        # amplitude from ``V[k, s + 2*ir(R), alpha]`` requires the phase
+        # ``exp(-i k_folded . (folded_cell(R) + sub_offset(R)))`` — not
+        # just ``k_folded . folded_cell(R)``. The extra
+        # ``k_folded . sub_offset(R)`` contribution is what encodes the
+        # intra-supercell displacement into the Bloch factor; without it
+        # the reconstructed A columns give the right density only when
+        # ``ir(r_i) == ir(r_j)`` and produce wrong off-diagonal (in ir)
+        # density entries (bug pattern verified against ComplexUHF SCF
+        # ground truth on case_soc_rashba_2d_sub: pre-fix bridge density
+        # matched cx cisajs only for ir_i == ir_j pairs, disagreed by
+        # up to 0.24 for ir_i != ir_j pairs — see spec §4.4 v3.4 audit).
+        # Under ``SubShape = [1, 1, 1]``, ``sub_offset`` is always zero
+        # so this fix reduces to the pre-v3.4 formula and the SOC-only
+        # (SubShape=[1,1,1]) fixtures are bit-identical.
+        kf_dot_r = np.einsum(
+            "kd,id->ki", k_folded_all,
+            (folded_cell + sub_offset_per_site).astype(np.float64),
         )
         # v3.2 SOC + APBC gauge fix. The SOC branch reads folded
         # eigenvectors under the negative-Bloch convention
@@ -490,7 +521,7 @@ def build_slater_orbitals(
         # ``exp(+i theta r / L)`` because its plane-wave sign is ``+i k R``.
         phys_dn = np.exp(-1j * phys_arg)
         plane_wave_soc = (
-            np.exp(-1j * kf_dot_fc) * inv_sqrt * phys_dn[np.newaxis, :]
+            np.exp(-1j * kf_dot_r) * inv_sqrt * phys_dn[np.newaxis, :]
         )
         for p, pair in enumerate(pair_list):
             for column_idx, member in enumerate(pair):

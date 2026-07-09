@@ -5,17 +5,40 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CASE="${1:-case_pbc}"
 ROOT="${HERE}/../../.."
+
+# Codex v3.4 Rev.4 finding: reject path-traversing CASE values so a
+# `../whatever` or absolute path cannot cause the later `rm -rf` on
+# ${CASE_DIR}/work to escape the fixture directory and delete
+# unrelated work dirs. Only accept plain fixture directory names
+# (no `/`, no `..`, no leading `.`) that resolve inside ${HERE}.
+if [[ "${CASE}" =~ [/] ]] || [[ "${CASE}" == ".."* ]] || [[ "${CASE}" == "."* ]]; then
+    echo "ERROR: CASE argument '${CASE}' must be a plain fixture name" >&2
+    echo "(no '/', no leading '.'; use e.g. case_pbc, case_soc_rashba_2d_nosub)." >&2
+    exit 1
+fi
 CASE_DIR="${HERE}/${CASE}"
 [[ -d "${CASE_DIR}" ]] || { echo "case not found: ${CASE_DIR}" >&2; exit 1; }
-
-# v3.1 spec §1 out-of-scope: SubShape > 1 + SOC has an additional
-# class-consistency issue (independent of the trans.def emitter added
-# in Task 15) that is deferred to v3.2. Reject the fixture up-front
-# so the docker E2E loop can't accidentally exercise the deferred path.
-if [[ "${CASE}" == "case_soc_rashba_2d_sub" ]]; then
-  echo "case_soc_rashba_2d_sub: deferred to v3.2 (v3.1 spec §1 out-of-scope)" >&2
-  exit 1
+# Codex Rev.5 finding: reject symlink CASE directories so
+# `case_alias -> case_pbc` cannot cause rm -rf on case_pbc's
+# work dir when the user typed `case_alias`.
+if [[ -L "${CASE_DIR}" ]]; then
+    echo "ERROR: CASE_DIR ${CASE_DIR} is a symlink; refuse to risk" >&2
+    echo "cross-fixture rm -rf. Use the target fixture name directly." >&2
+    exit 1
 fi
+# Belt-and-braces: after directory resolution, confirm CASE_DIR is
+# actually a direct child of HERE AND matches the requested name
+# byte-for-byte (guards against nested symlink shenanigans).
+HERE_REAL="$(cd "${HERE}" && pwd -P)"
+CASE_DIR_REAL="$(cd "${CASE_DIR}" && pwd -P)"
+if [[ "${CASE_DIR_REAL}" != "${HERE_REAL}/${CASE}" ]]; then
+    echo "ERROR: resolved CASE_DIR ${CASE_DIR_REAL} does not match" >&2
+    echo "expected ${HERE_REAL}/${CASE}; refuse cross-fixture operation." >&2
+    exit 1
+fi
+# From this point on, use the resolved canonical path for all
+# destructive operations.
+CASE_DIR="${CASE_DIR_REAL}"
 
 # We reuse the mVMC build under apbc_complexuhf/build/mvmc to avoid two copies.
 MVMC_BUILD="${HERE}/../apbc_complexuhf/build/mvmc/build"
@@ -148,6 +171,20 @@ if [[ "${CASE}" == case_soc_* ]]; then
     --emit-trans "${MVMC_WORK}/trans.def"
   )
 fi
+# v3.2 spec §1: SOC + SubShape > [1, 1, 1] needs a bridge-emitted
+# orbitalidxgen.def with all-unique classes (StdFace's over-grouping
+# under SOC + sublattice folding trips the class-consistency guard).
+# The bridge writes to a sidecar path here; the E2E harness then moves
+# it over StdFace's orbitalidxgen.def before mVMC runs so the mVMC
+# InOrbitalGeneral consumer sees the same classes the bridge used.
+BRIDGE_ORBITALIDX_ARGS=()
+BRIDGE_EMIT_ORBITALIDX_PATH=""
+if [[ "${CASE}" == "case_soc_rashba_2d_sub" ]]; then
+  BRIDGE_EMIT_ORBITALIDX_PATH="${MVMC_WORK}/orbitalidxgen.def.bridge"
+  BRIDGE_ORBITALIDX_ARGS=(
+    --emit-orbitalidx "${BRIDGE_EMIT_ORBITALIDX_PATH}"
+  )
+fi
 python3 tools/uhfk_to_mvmc.py \
     --input        "${HWAVE_WORK}/input.toml" \
     --eigen        "${HWAVE_WORK}/output/eigen.npz" \
@@ -159,10 +196,19 @@ python3 tools/uhfk_to_mvmc.py \
     --onebodyg-uhf "${HWAVE_WORK}/output/greenone.dat" \
     --epsilon-noise "${EPSILON_NOISE}" \
     --rng-seed "${RNG_SEED}" \
-    "${BRIDGE_SOC_ARGS[@]}"
+    "${BRIDGE_SOC_ARGS[@]}" \
+    "${BRIDGE_ORBITALIDX_ARGS[@]}"
 echo "  bridge wrote: ${MVMC_WORK}/zqp_orbital_uhfk.dat (density check OK, epsilon=${EPSILON_NOISE})"
 if [[ "${CASE}" == case_soc_* ]]; then
   echo "  bridge wrote: ${MVMC_WORK}/trans.def (SOC: Rashba entries preserved)"
+fi
+# SOC + SubShape > 1 override: bridge's all-unique-classes
+# orbitalidxgen.def replaces StdFace's over-grouped version so mVMC
+# consumes the same class layout the bridge used to write
+# zqp_orbital_uhfk.dat.
+if [[ -n "${BRIDGE_EMIT_ORBITALIDX_PATH}" ]]; then
+  mv "${BRIDGE_EMIT_ORBITALIDX_PATH}" "${MVMC_WORK}/orbitalidxgen.def"
+  echo "  bridge wrote: ${MVMC_WORK}/orbitalidxgen.def (SOC+SubShape: all-unique classes)"
 fi
 
 # ---- step 4: register InOrbital(General) in namelist.def ----

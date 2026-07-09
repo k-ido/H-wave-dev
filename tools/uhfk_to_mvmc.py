@@ -106,6 +106,22 @@ def main(argv=None):
             "file layout at this location."
         ),
     )
+    # v3.2 spec §1: under SOC + SubShape > [1, 1, 1] StdFace's
+    # orbitalidxgen.def over-groups pair classes (assumes full-lattice
+    # translation invariance, which SOC breaks under sublattice folding),
+    # so the class-consistency guard (spec §4.3) fires with residuals of
+    # order 1e-1. The bridge emits its own all-unique-classes
+    # orbitalidxgen.def to this path and uses it in place of the caller-
+    # supplied --orbitalidx for the F aggregation. Required under
+    # SOC + SubShape > [1, 1, 1]; ignored otherwise.
+    parser.add_argument(
+        "--emit-orbitalidx", dest="emit_orbitalidx", default=None,
+        help=(
+            "Output all-unique-classes orbitalidxgen.def path. Required "
+            "under SOC + SubShape > [1, 1, 1] (bypasses StdFace's class "
+            "over-grouping); ignored otherwise."
+        ),
+    )
     args = parser.parse_args(argv)
 
     toml_param = load_input_toml(args.input)
@@ -166,14 +182,41 @@ def main(argv=None):
     # wrap-phase to boundary-crossing rows so mVMC's ``H = -sum trans``
     # recovers the physical Hamiltonian on the periodic-site frame.
     # The prior v3.1 deferred reject is removed here.
-    # SOC + SubShape > [1, 1, 1] remains deferred: StdFace's
-    # orbitalidxgen.def classes assume full-lattice translation
-    # invariance, which SOC breaks under sublattice folding.
-    if is_soc_mode and any(int(s) != 1 for s in sub_shape):
+    is_soc_sublattice_mode = is_soc_mode and any(
+        int(s) != 1 for s in sub_shape
+    )
+    # v3.5 Phase D lift (2026-07-05): the v3.4 Rev.2 pre-dispatch reject
+    # for SOC + SubShape > [1, 1, 1] has been removed. The v3.5 density
+    # gate below now invokes
+    # ``compare_against_green_sublattice(is_soc_sublattice_mode=True)``,
+    # which lifts H-wave's ``green_sublattice`` to the physical basis via
+    # ``gauge_lift`` and validates the SHIPPING ``conj(A) @ A.T`` directly
+    # at 1e-10. This closes the "dual-A" gap flagged by Codex v3.4 Rev.2
+    # (the previous gate validated a "reference A" that dropped
+    # ``sub_offset``, not the shipping A). See
+    # docs/superpowers/specs/2026-07-05-uhfk-mvmc-pairproduct-general-v35-design.md
+    # §2-3 for the gauge derivation and §6.2b for the adversarial
+    # negative-regression test that pins the gate's independence from the
+    # shipping-A convention.
+    #
+    # v3.4 Rev.1 finding 2 defer (still in effect at v3.5): SOC + APBC +
+    # SubShape > [1, 1, 1] is the composed triple combination and remains
+    # UNVALIDATED. Only its two-way subsets are covered by fixtures:
+    #   - case_soc_rashba_2d_nosub_apbc: SOC + APBC (SubShape = [1,1,1]),
+    #     0.03% mVMC vs H-wave delta.
+    #   - case_soc_rashba_2d_sub: SOC + SubShape (PBC), 0.22% delta.
+    # The composed SOC+APBC+SubShape phase path has no fixture and no
+    # end-to-end validation, so we fail-fast pre-dispatch. When a future
+    # spec adds a SOC+APBC+SubShape fixture and empirical <H> validation,
+    # remove this guard (v3.6+, see §8 non-goals).
+    if is_soc_mode and has_apbc and any(int(s) != 1 for s in sub_shape):
         print(
-            "ERROR: enable_spin_orbital = true + SubShape > [1, 1, 1] is not "
-            "validated (deferred). Rerun with SubShape = [1, 1, 1] "
-            "or drop enable_spin_orbital.",
+            "ERROR: enable_spin_orbital = true + antiperiodic BC + "
+            "SubShape > [1, 1, 1] is not yet validated. "
+            "case_soc_rashba_2d_nosub_apbc covers SOC+APBC (0.03% delta); "
+            "case_soc_rashba_2d_sub covers SOC+SubShape (0.22% delta); "
+            "the composed SOC+APBC+SubShape phase path has no fixture. "
+            "Deferred to a future spec.",
             file=sys.stderr,
         )
         return 2
@@ -277,12 +320,27 @@ def main(argv=None):
                 file=sys.stderr,
             )
             return 2
+        # v3.2 spec §1: SOC + SubShape > [1, 1, 1] requires the bridge to
+        # emit an all-unique-classes orbitalidxgen.def in place of
+        # StdFace's over-grouped one; fail up-front when the caller
+        # forgot the flag so the error surfaces before any I/O.
+        if is_soc_sublattice_mode and args.emit_orbitalidx is None:
+            print(
+                "ERROR: enable_spin_orbital = true + SubShape > [1, 1, 1] "
+                "requires --emit-orbitalidx (v3.2 spec §1: StdFace's "
+                "orbitalidxgen.def over-groups pair classes under SOC + "
+                "sublattice folding; the bridge emits an all-unique-"
+                "classes replacement).",
+                file=sys.stderr,
+            )
+            return 2
         # SOC path is no longer experimental (v3.2): the trans.def sign
-        # convention is derived from H-wave's internal epsilon_k swap
-        # composed with mVMC's H = -sum trans convention, and
-        # independently verified against ComplexUHF at 4.4e-8% precision
-        # on case_soc_rashba_2d_nosub. See tools/_uhfk_to_mvmc/
-        # trans_emit.py module docstring for the derivation.
+        # convention is empirically pinned via ComplexUHF verification at
+        # 4.4e-8% precision on case_soc_rashba_2d_nosub. An earlier
+        # attempt to derive it from H-wave's sc.py epsilon_k swap does
+        # NOT apply (uhfk.py:1143-1144 does not perform that swap). See
+        # tools/_uhfk_to_mvmc/trans_emit.py module docstring for the
+        # empirical basis.
         _, site_R_int, norb = load_geometry_uhf(args.geometry)
         if norb != 1:
             print(
@@ -352,8 +410,28 @@ def main(argv=None):
         except ValueError as e:
             print(f"ERROR (general prerequisites): {e}", file=sys.stderr)
             return 2
+        # v3.2 spec §1: under SOC + SubShape > [1, 1, 1] the bridge emits
+        # its own all-unique-classes orbitalidxgen.def and uses it as the
+        # effective mapping source (bypasses StdFace's class over-grouping
+        # that would trip class-consistency in
+        # aggregate_general_orbital_params). The E2E harness is responsible
+        # for moving the emitted file over StdFace's version so mVMC also
+        # consumes the same all-unique classes at InOrbitalGeneral read
+        # time.
+        if is_soc_sublattice_mode:
+            from tools._uhfk_to_mvmc.orbitalidx_general_emitter import (
+                emit_orbitalidx_all_unique,
+            )
+            emit_orbitalidx_all_unique(
+                Ns, args.emit_orbitalidx, complex_type=1,
+            )
+            effective_orbitalidx_path = args.emit_orbitalidx
+        else:
+            effective_orbitalidx_path = args.orbitalidx
         try:
-            info_general = parse_orbitalidx_general_def(args.orbitalidx)
+            info_general = parse_orbitalidx_general_def(
+                effective_orbitalidx_path
+            )
         except OrbitalidxGeneralFormatError as e:
             print(f"ERROR (orbitalidx_general): {e}", file=sys.stderr)
             return 2
@@ -406,15 +484,74 @@ def main(argv=None):
                 )
                 return 2
             G_all = np.conj(A) @ A.T
-            try:
-                compare_against_onebodyg_uhf_general(
-                    G_all, args.onebodyg_uhf, tol=1e-10,
-                    is_soc_mode=is_soc_mode,
+            # v3.2 (spec §1 note): H-wave's greenone.dat has a known bug
+            # under SOC + SubShape > [1, 1, 1] (a downstream fold path
+            # returns wrong values while ``green.npz['green_sublattice']``
+            # remains correct — being fixed on a separate H-wave branch,
+            # see memory/feedback_hwave_sublattice_green_testing.md).
+            # For this case route the density check through the folded
+            # green_sublattice instead of greenone.dat. The green.npz
+            # path is derived from the --eigen path (H-wave writes both
+            # to the same output/ directory).
+            if is_soc_sublattice_mode:
+                # v3.5 Phase C density gate for SOC + SubShape > [1, 1, 1].
+                # The v3.4 dual-A workaround (build a reference A without
+                # ``sub_offset`` for the density check while shipping a
+                # distinct A with ``sub_offset`` to mVMC) is retired: the
+                # v3.5 branch of ``compare_against_green_sublattice``
+                # LIFTS ``green_sublattice`` to the physical basis via
+                # ``gauge_lift`` and compares element-wise to the shipping
+                # ``conj(A) @ A.T`` (spec §3 v3.5 design). This gauge-
+                # invariant lift restores a strict full-element density
+                # gate at 1e-10 directly on the shipping A/F. Codex Rev.2
+                # concern (dual-A pattern hides shipping-A regressions)
+                # is resolved.
+                from tools._uhfk_to_mvmc.density_check import (
+                    compare_against_green_sublattice,
                 )
-            except DensityMismatchError as e:
-                print(f"ERROR (density check): {e}", file=sys.stderr)
-                return 3
-            print("density check OK (tol 1e-10)")
+                green_npz_path = os.path.join(
+                    os.path.dirname(args.eigen), "green.npz"
+                )
+                if not os.path.isfile(green_npz_path):
+                    print(
+                        f"ERROR: --check-density under SOC + SubShape > "
+                        f"[1, 1, 1] requires green.npz at "
+                        f"{green_npz_path!r} (derived from --eigen "
+                        f"parent dir); H-wave writes it when "
+                        f"has_sublattice is True.",
+                        file=sys.stderr,
+                    )
+                    return 2
+                try:
+                    compare_against_green_sublattice(
+                        G_all, green_npz_path,
+                        site_positions=site_R_int.astype(np.int64),
+                        cell_shape=cell_shape_arr,
+                        subshape=subshape_arr,
+                        Ns=Ns,
+                        tol=1e-10,
+                        is_soc_sublattice_mode=True,
+                    )
+                except DensityMismatchError as e:
+                    print(
+                        f"ERROR (density check, green_sublattice): {e}",
+                        file=sys.stderr,
+                    )
+                    return 3
+                print(
+                    "density check OK (tol 1e-10; SOC+SubShape gauge-"
+                    "lifted green_sublattice, v3.5)"
+                )
+            else:
+                try:
+                    compare_against_onebodyg_uhf_general(
+                        G_all, args.onebodyg_uhf, tol=1e-10,
+                        is_soc_mode=is_soc_mode,
+                    )
+                except DensityMismatchError as e:
+                    print(f"ERROR (density check): {e}", file=sys.stderr)
+                    return 3
+                print("density check OK (tol 1e-10)")
         # Codex adversarial review (Rev.1, finding 3): under SOC, both
         # zqp_orbital_uhfk.dat and trans.def must land atomically as a
         # pair. A failure in emit_trans_def used to leave a stale zqp on

@@ -48,12 +48,55 @@ reports (`t=1, α=0.5, U=2`, initial Green = zeros):
 
 ## Status
 
-Task 12 (fixture + pilot) landed; full docker E2E gate is Task 13.
+**v3.5 shipping** (commit landing this task). The build_slater_orbitals
+sub_offset fix (v3.4 commit 505f934) reproduces H-wave's Slater to mVMC
+⟨H⟩ delta 0.22%. The v3.5 gauge-lifted density gate
+(`compare_against_green_sublattice(..., is_soc_sublattice_mode=True)`)
+validates the shipping A directly against `green_sublattice` at 1e-10,
+independent of the shipping-A convention. See
+`docs/superpowers/specs/2026-07-05-uhfk-mvmc-pairproduct-general-v35-design.md`
+for the derivation.
+
+### What works
+- Bridge Hamiltonian emission (trans.def, orbitalidxgen.def, coulombintra.def) — verified by ComplexUHF at 0.15%.
+- Bridge Slater WF (build_slater_orbitals SOC branch with sub_offset) — verified by v3.5 gauge-lifted density check at 1e-10.
+- mVMC ⟨H⟩ agreement — E2E delta 0.22%.
+
+### Historical context
+- v3.2 A2: attempted SubShape support, discovered off-diagonal cross-spin bug.
+- v3.3: three misleading diagnostics before narrowing bug locus.
+- v3.4: sub_offset fix landed but density gate insufficient (Codex Rev.2).
+- v3.5: gauge_lift closes the independent density validation gap.
+
+## Pre-v3.4 divergence root cause (kept for v3.5 reference)
+
+Root cause of the pre-v3.4 divergence (~17 units off):
+
+- The SOC branch of `build_slater_orbitals` used
+  `exp(-i k_folded · folded_cell(R))` alone in the plane-wave phase
+  for both the k-space lookup and the physical Bloch reconstruction.
+  That misses the intra-supercell contribution
+  `exp(-i k_folded · sub_offset(R))` needed for consistency with
+  H-wave's folded eigenvector convention when converting to a physical
+  A that mVMC's F evaluation can consume.
+- Pre-fix bridge Slater WF: correct density only on `ir(r_i) == ir(r_j)`
+  pairs; up to 0.24 disagreement with the physical density on other
+  pairs → mVMC ⟨H⟩ off by ~17 units.
+
+v3.4 fix (commit 505f934):
+
+- Replace the phase with
+  `exp(-i k_folded · (folded_cell(R) + sub_offset(R)))`.
+- Under `SubShape = [1, 1, 1]`, `sub_offset` is always zero so
+  `case_soc_rashba_2d_nosub` / `case_soc_rashba_2d_nosub_apbc` are
+  bit-identical.
+
+## Design rationale for the fixture
+
 The fixture exercises the SOC pair-emission path where the folded BZ
 contains both self canonical blocks (at `k_x = 0` × all `k_y`) and
 non-self canonical pairs (at `k_x = ±2π/3` × all `k_y`), while
-SubShape `[2, 2, 1]` is simultaneously active. Task 13 will add a
-harness gate asserting that at least one non-self canonical block
-appears in the pair-list report (spec §4.2.2 success criterion 5) so
-a SubShape choice that silently degenerates to fully-self blocks
-fails the fixture.
+SubShape `[2, 2, 1]` is simultaneously active. `run.sh` step 1.6
+asserts at least one non-self canonical block (spec §4.2.2 success
+criterion 5) so a SubShape choice that silently degenerates to
+fully-self blocks fails the fixture.

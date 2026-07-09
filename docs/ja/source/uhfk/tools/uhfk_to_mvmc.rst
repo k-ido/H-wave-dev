@@ -58,16 +58,77 @@ mVMC の PairProduct 状態を H-wave UHF の Slater 行列で初期化できる
   General-SOC path。``orbitalidx_general.def`` (6 列) を消費し、Sz 非保存の
   ``F[up_i, down_j]`` / ``F[down_i, up_j]`` を出力する。Zeeman、Rashba、
   Dresselhaus、一般 σ_x/σ_y 型 1-body coupling をサポート。
-- ``enable_spin_orbital = true`` + APBC の組合せは **v3.2 で扱う**。
-  dispatch で明示的に fail-fast する。
-- ``SubShape > [1, 1, 1]`` と SOC の組合せは **v3.2 で扱う**。
-  StdFace の ``orbitalidxgen.def`` クラスが full-lattice 並進不変を仮定
-  しているため、副格子 fold 下では SOC が破る。
 - ``eigen.npz["twist_offset"]`` を ``input.toml`` の canonical
   ``BoundaryCondition`` と照合し、stale 入力/eigen のペアを排除する。
 - SOC 下では bridge が H-wave の ``Transfer.dat`` から ``trans.def`` も
   出力する (下記参照)。mVMC の ``vmcdry.out`` は Rashba の s!=t 項を
   保存できない。
+
+スコープ (v3.2)
+^^^^^^^^^^^^^^^
+
+- **SOC + APBC** を end-to-end でサポート。``trans.def`` 出力に
+  ``BoundaryCondition`` 由来の ``boundary_theta`` を透過させる:
+  APBC 方向で境界を跨ぐ行 (``(R_x, R_y, R_z)`` が境界越え) は物理的な
+  wrap-phase (正の ``R`` 越えで ``exp(i theta_d)``、負の ``R`` 越えで
+  ``exp(-i theta_d)``、APBC 方向は ``theta_d = pi``) を掛ける。
+  ベースの SOC 符号規約 (下の「符号規約」参照) と同様、この wrap-phase
+  規約も **empirically pinned** であり、
+  ``tests/validation/uhfk_mvmc_pairproduct/case_soc_rashba_2d_nosub_apbc``
+  で E2E 検証済み (mVMC ⟨H⟩ が H-wave UHF から 0.03% 以内)。H-wave 内部
+  規約から first-principles で導出することは UHFk path では clean には
+  通らない — 詳細は ``tools/_uhfk_to_mvmc/trans_emit.py`` の module
+  docstring を参照。
+- **SOC + SubShape > [1, 1, 1]** は v3.4 で延期されていた (Codex v3.4
+  Rev.2 finding: dual-A 密度 gate では ship される A/F を検証できず、
+  reference A が ``sub_offset`` を落とした別物であったため)。v3.5 では
+  この経路を、SHIPPING A を直接検証する gauge-lifted 単一 A 密度チェック
+  で復活させた — 下の「Scope (v3.5)」を参照。
+- **SOC + APBC + SubShape > [1, 1, 1]** の三重組合せは v3.5 でも引き
+  続き延期する (Rev.1 finding 2: E2E fixture 未整備、SOC + APBC と
+  SOC + SubShape を合成した phase 経路は独立検証されていない)。
+  ``enable_spin_orbital = true`` と antiperiodic ``BoundaryCondition``
+  と ``SubShape > [1, 1, 1]`` が同時に指定されると、CLI は dispatch
+  前に fail-fast する。
+- v3.1 SOC ``trans.def`` の符号規約は引き続き **empirically pinned**。
+  以前 ``epsilon_k`` swap と ``H = -sum trans`` の合成から導出すると記載
+  していたが、``sc.py`` の ``epsilon_k[orb2, orb1]`` swap は UHFk path
+  (``uhfk.py``) では行われないため、この swap 由来の解析的導出は本
+  ブリッジには当てはまらないことが判明した。ship される規約は
+  ``case_soc_rashba_2d_nosub`` に対する ComplexUHF 検証で 4.4e-8%
+  で再検証されており、詳細は ``tools/_uhfk_to_mvmc/trans_emit.py`` の
+  module docstring (empirical basis と、放棄された derivation の
+  経緯) を参照。
+
+スコープ (v3.5)
+^^^^^^^^^^^^^^^
+
+- **SOC + SubShape > [1, 1, 1]** は v3.5 で、gauge-lifted 密度チェック
+  ``compare_against_green_sublattice(..., is_soc_sublattice_mode=True)``
+  (element-wise 1e-10) を経由してサポートされた。密度チェックは H-wave
+  の ``green_sublattice`` (folded-Bloch basis) を ``gauge_lift`` で物理
+  基底に持ち上げ、SHIPPING ``conj(A) @ A.T`` (= mVMC に emit する A
+  そのもの) と element-wise 照合する。これにより v3.4 の dual-A
+  gap を塞ぐ。gauge 変換は shipping A の位相
+  ``exp(-i k · (folded_cell + sub_offset))`` を ``green_sublattice``
+  の folded-Bloch 保存形式に接続する; 導出は
+  ``docs/superpowers/specs/2026-07-05-uhfk-mvmc-pairproduct-general-v35-design.md``
+  §2-3 を参照 (``docs/superpowers/`` は gitignored で、リリースには
+  spec は同梱されない)。v3.4 の ``_soc_reference_convention``
+  escape hatch は削除され、コードベースには shipping 規約の A のみが
+  残る。
+- **SOC + APBC + SubShape > [1, 1, 1]** の三重組合せは引き続き
+  reject される (合成 phase 経路が未検証、E2E fixture 無し — 上の
+  「Scope (v3.2)」も参照)。
+- SOC + SubShape > [1, 1, 1] で必須の CLI フラグ: ``--transfer``
+  (H-wave ``Transfer.dat`` の読み込み)、``--emit-trans`` (Rashba の
+  spin-off-diagonal を保持した mVMC ``trans.def`` の出力)、
+  ``--emit-orbitalidx`` (StdFace の class merging を bypass。折り
+  畳み格子下では Sz 非保存クラスを表現できない — v3.2 spec §1 の
+  rationale を参照)。
+- Empirical E2E: ``case_soc_rashba_2d_sub`` で mVMC ⟨H⟩ が
+  H-wave ``Energy_Total`` と 0.22% 一致 (delta -0.055 / 25.10)、
+  gauge-lifted 密度 gate は 1e-10 で clean。
 
 ワークフロー
 ^^^^^^^^^^^^
@@ -168,21 +229,33 @@ SOC 下では mVMC の ``vmcdry.out`` が ``StdFace_Hopping`` で ``trans.def``
 - ``s == t`` (NN hopping): ``trans = -val_hwave`` (vmcdry の flip と一致)。
 - ``s != t`` (Rashba): ``trans = +val_hwave``。
 
-この mixed 規約は
-``tests/validation/uhfk_mvmc_pairproduct/case_soc_rashba_2d_nosub``
-の E2E に対して calibrate 済み。一様 flip では ⟨H⟩ が 42.58% ずれる。
-mVMC upgrade 後は再検証が必要 (mVMC 側の機構は
-``locgrn_fsz.c:128`` に mVMC 作者の ``//TBC`` コメントが残る)。
+この mixed 規約 ``(sign_diag = -1, sign_offdiag = +1)`` は
+``case_soc_rashba_2d_nosub`` に対する ComplexUHF 検証で 4.4e-8% 一致
+という形で **empirically pinned** されている。mVMC の規約は
+``H = -Σ trans c†c`` だが、source-target index 規約と H-wave の k-空間
+Hamiltonian との相互作用の詳細は、本ブリッジ内では **first principles
+のみからは導出できない** — 詳細および放棄された「H-wave ``sc.py`` の
+swap から導出する」story は ``tools/_uhfk_to_mvmc/trans_emit.py`` の
+module docstring を参照 (``sc.py`` は ``epsilon_k[orb2, orb1]`` swap を
+行うが、``uhfk.py`` は同じ swap を行わないため、swap 由来の導出は
+合成できない)。一様 flip (両方 ``-val``) では同じ fixture で ⟨H⟩ が
+42.58% ずれる。**mVMC または H-wave のバージョン更新後は
+``case_soc_rashba_2d_nosub`` に対する E2E で再検証する** — mVMC 側の
+機構は ``locgrn_fsz.c:128`` に mVMC 作者の ``//TBC`` コメントが残る。
 
 新規 CLI フラグ (SOC 限定): ``--transfer <path>`` と ``--emit-trans <path>``。
 
-v3.1 のスコープ外
+v3.5 のスコープ外
 ^^^^^^^^^^^^^^^^^
 
-- SOC + APBC 組合せ (v3.2 で扱う)。dispatch で拒絶。
-- SOC + ``SubShape > [1, 1, 1]`` 組合せ (v3.2 で扱う)。
+- SOC + APBC + ``SubShape > [1, 1, 1]`` の三重組合せは v3.5 以降へ
+  延期 (Rev.1 finding 2: E2E fixture 未整備、SOC + APBC と
+  SOC + SubShape を合成した phase 経路は独立検証されていない)。
+  2 組の subset は fixture を保持している:
+  ``case_soc_rashba_2d_nosub_apbc`` (SOC + APBC、0.03% 差)、
+  ``case_soc_rashba_2d_sub`` (SOC + SubShape、0.22% 差)。
 - 2-body Sz 非保存相互作用 (spin-flip Coulomb, Hund coupling,
-  pair hopping)。CoulombIntra (on-site U) のみが v3.1 の唯一の 2-body 項。
+  pair hopping)。CoulombIntra (on-site U) のみが v3.5 の唯一の 2-body 項。
 
 クラス一致性チェック (v3 General)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -204,6 +277,17 @@ sign 付き F 成分が ``class_consistency_tol`` (default 1e-8) 以内で
 H-wave の物理基底 ``greenone.dat`` と element-wise 比較する (許容 1e-10)。
 不一致は fatal で、H-wave APBC、ブリッジ、もしくは geometry の前提に
 バグがあることを示す。
+
+SOC + SubShape > [1, 1, 1] では密度チェックは
+``compare_against_green_sublattice(..., is_soc_sublattice_mode=True)``
+(許容 1e-10) に切り替わる (H-wave ``greenone.dat`` の fold path は
+本組合せで known-buggy、``green_sublattice`` が source of truth)。
+チェックは H-wave の ``green_sublattice`` を ``gauge_lift`` で物理
+基底に持ち上げ、SHIPPING ``conj(A) @ A.T`` (mVMC に emit する A
+そのもの) と element-wise 照合するため、shipping-A 経路の regression
+は silent には通らない。これにより v3.4 で塞いだ密度 gate (dual-A
+hole) が v3.5 spec §2-3 で導出した gauge lift により復活し、
+v3.4 の ``_soc_reference_convention`` escape hatch は削除された。
 
 終了コード
 ^^^^^^^^^^
