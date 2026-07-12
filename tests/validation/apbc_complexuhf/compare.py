@@ -32,6 +32,22 @@ def _read_energy_complexuhf(path: Path) -> float:
 
 
 def _read_greenone(path: Path) -> dict[tuple[int, int, int, int], complex]:
+    """Parse a 6-column one-body Green output ``(i, s, j, t, re, im)``.
+
+    Handles BOTH the non-SOC (Sz-diagonal, off-block-diagonal entries
+    are zero) and the SOC (Rashba cross-spin ``s != t`` non-zero
+    entries) layouts. Both mVMC-1.4.0 ComplexUHF's ``zvo_UHF_cisajs.dat``
+    (mVMC-1.4.0 ``src/ComplexUHF/output.c:99``, ``print("%d %d %d %d
+    %.10lf %.10lf")``) and H-wave UHFk's ``greenone.dat`` write the
+    same layout, so a single parser reads both sides of the cross-check.
+
+    v3.6 (Phase 5b): under SOC + APBC + SubShape > [1, 1, 1] the
+    ComplexUHF UHF binary emits non-zero cross-spin ``s != t`` rows
+    from the Rashba SOC term; the parser preserves them verbatim so
+    the caller can compare complex cross-spin entries against the
+    v3.6 bridge's shipping A density at 1e-6 tolerance (spec §5.3 G2a
+    /G2b).
+    """
     out: dict[tuple[int, int, int, int], complex] = {}
     for ln in path.read_text().splitlines():
         parts = ln.split()

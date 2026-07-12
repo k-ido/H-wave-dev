@@ -78,6 +78,7 @@ def compare_against_green_sublattice(
     tol: float = 1e-10,
     is_soc_sublattice_mode: bool = False,
     Ns: int = None,
+    boundary_theta: tuple = (0.0, 0.0, 0.0),
 ) -> None:
     """Compare bridge-built physical G against H-wave's folded
     ``green_sublattice`` (v3.2 SOC + SubShape > [1, 1, 1] fallback).
@@ -174,6 +175,7 @@ def compare_against_green_sublattice(
                             cell_shape=cell_shape_arr,
                             site_positions=site_positions_arr,
                             folded_cell_of=folded_cell_of,
+                            boundary_theta=boundary_theta,
                         )
         max_diff = float(np.max(np.abs(G_ref - G_all)))
         if max_diff > tol:
@@ -280,11 +282,14 @@ def compare_against_green_sublattice(
 
 
 def gauge_lift(green_sublattice, site_i, spin_i, site_j, spin_j,
-               subshape, cell_shape, site_positions, folded_cell_of):
+               subshape, cell_shape, site_positions, folded_cell_of,
+               boundary_theta):
     """Reconstruct G_phys[all_i, all_j] independently from green_sublattice.
 
     See docs/superpowers/specs/2026-07-05-uhfk-mvmc-pairproduct-general-v35-design.md
-    §2 for the derivation. Convention: G[all_i, all_j] =
+    §2 for the v3.5 (PBC) derivation and
+    docs/superpowers/specs/2026-07-09-uhfk-mvmc-pairproduct-general-v36-design.md
+    §2.3, §3.2 for the v3.6 APBC composition. Convention: G[all_i, all_j] =
     sum_alpha conj(A[all_i, alpha]) * A[all_j, alpha], matching H-wave's
     _green (conj(V_a) * V_b) and the existing bridge density check.
 
@@ -306,6 +311,16 @@ def gauge_lift(green_sublattice, site_i, spin_i, site_j, spin_j,
     folded_cell_of : callable(r_phys) -> (3,) int
         Returns the folded-cell index for a physical position (r_phys //
         subshape componentwise).
+    boundary_theta : array-like of length 3
+        Twist ``(theta_x, theta_y, theta_z)`` in RADIANS. Each component
+        in ``{0, pi}`` under Periodic / Antiperiodic. Passed WITHOUT
+        conversion; callers MUST pass radians, NOT the dimensionless
+        ``twist_offset = theta / (2*pi)``. The v3.6 composed phase is
+        ``exp(-i k_folded . dr_folded) * exp(-i theta . dr_full / L_full)``
+        where ``dr_full = r_phys_j - r_phys_i`` and
+        ``L_full = SubShape * L_folded``. Under PBC (all-zero theta) the
+        twist factor collapses to 1 and the output is bit-identical to
+        the v3.5 result.
 
     Returns
     -------
@@ -338,15 +353,24 @@ def gauge_lift(green_sublattice, site_i, spin_i, site_j, spin_j,
     aa = 2 * folded_orb_i + int(spin_i)
     bb = 2 * folded_orb_j + int(spin_j)
 
+    # v3.6 spec §3.2: twist gauge is k-independent per (i, j) pair; hoist
+    # it out of the k loop. Under PBC (all-zero theta) phase_twist == 1
+    # and the result is bit-identical to the v3.5 formula.
+    r_diff_folded = (fc_j.astype(np.float64) + so_j.astype(np.float64)) \
+                    - (fc_i.astype(np.float64) + so_i.astype(np.float64))
+    r_diff_full = r_phys_j.astype(np.float64) - r_phys_i.astype(np.float64)
+    L_full = (subshape * L_folded).astype(np.float64)
+    theta = np.asarray(boundary_theta, dtype=np.float64)
+    phase_twist = np.exp(-1j * np.dot(theta, r_diff_full / L_full))
+
     accum = 0.0j
     for kx in range(L_folded[0]):
         for ky in range(L_folded[1]):
             for kz in range(L_folded[2]):
                 k_vec = 2.0 * np.pi * np.array([kx, ky, kz], dtype=np.float64) / L_folded
-                r_diff = (fc_j.astype(np.float64) + so_j.astype(np.float64)) \
-                         - (fc_i.astype(np.float64) + so_i.astype(np.float64))
-                phase = np.exp(-1j * np.dot(k_vec, r_diff))
-                accum += G_k[kx, ky, kz, aa, bb] * phase
+                phase_folded = np.exp(-1j * np.dot(k_vec, r_diff_folded))
+                accum += G_k[kx, ky, kz, aa, bb] * phase_folded
+    accum *= phase_twist
     # Codex v3.5 spec Rev.5 finding: divide by N_folded to match H-wave's
     # forward-normalized fftn convention.
     return accum / float(np.prod(L_folded))

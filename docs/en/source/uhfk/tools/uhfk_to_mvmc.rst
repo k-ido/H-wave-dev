@@ -137,6 +137,130 @@ Scope (v3.5)
   ``Energy_Total`` at 0.22% delta (delta -0.055 out of 25.10) with the
   gauge-lifted density gate clean at 1e-10.
 
+Scope (v3.6)
+^^^^^^^^^^^^
+
+- **SOC + single-direction APBC + SubShape > [1, 1, 1]** is now shippable
+  in v3.6. The bridge's ``build_slater_orbitals`` composes the sub_offset
+  gauge (``exp(-i k_folded · (folded_cell + sub_offset))``) with the APBC
+  twist (``exp(-i theta · r_phys / L_phys)``) so the shipping A carries
+  both phases consistently; ``gauge_lift`` in
+  ``tools/_uhfk_to_mvmc/density_check.py`` receives ``boundary_theta``
+  and applies the same composed transform when lifting
+  ``green_sublattice`` back to the physical basis. The shipping density
+  gate ``compare_against_green_sublattice(...,
+  is_soc_sublattice_mode=True)`` passes at 1e-10 on the v3.6 shipping
+  fixture ``case_soc_rashba_2d_sub_apbc``
+  (``CellShape = [6, 4, 1]``, ``SubShape = [2, 2, 1]``,
+  ``BoundaryCondition = ["antiperiodic", "periodic", "periodic"]``,
+  ``enable_spin_orbital = true``, Rashba ``alpha = 0.5``, ``U = 2``,
+  ``Ncond = 8``).
+
+- **Multi-direction APBC (n_apbc_dirs >= 2) + SOC + SubShape > [1, 1, 1]**
+  remains rejected pre-dispatch. The exact CLI reject message is::
+
+      ERROR: enable_spin_orbital = true + multi-direction APBC
+      (n_apbc_dirs=<count>) + SubShape > [1, 1, 1] is deferred to v3.7.
+      Single-direction APBC + SOC + SubShape > 1 is supported in v3.6 as
+      of case_soc_rashba_2d_sub_apbc.
+
+  The Phase 6 dispatch predicate that fires this reject::
+
+      n_apbc_dirs = sum(1 for t in theta if abs(t - pi) < 1e-12
+                                       or abs(t + pi) < 1e-12)
+      if is_soc_mode and n_apbc_dirs > 1 and any(s != 1 for s in sub_shape):
+          return 2
+
+  A first-principles derivation of the composed twist gauge on
+  multi-direction APBC + SubShape > 1 has not been validated against an
+  E2E fixture (no ``case_soc_rashba_2d_sub_apbc_apbc`` exists in the v3.6
+  tree); the reject exists to fail-fast rather than silently produce a
+  wrong ``trans.def`` / shipping A.
+
+- **v3.6 seven-gate contract** (all seven records PASS on fresh workspace
+  for ``case_soc_rashba_2d_sub_apbc``):
+
+  1. **G0-writer-check**: emitted-F rank-lift-noise-off writer path
+     matches the aggregated (mapping, params) at 1e-10.
+  2. **G1**: shipping ``build_slater_orbitals`` density matches the
+     ``gauge_lift``-lifted green_sublattice at 1e-10.
+  3. **G2a-emitted-F**: emitted-F projector density matches ComplexUHF
+     one-body Green at 1e-6.
+  4. **G2a-in-memory-A**: in-memory shipping A density matches
+     ComplexUHF at 1e-6.
+  5. **G2b**: gauge-lifted green_sublattice matches ComplexUHF at 1e-6.
+  6. **G3**: mVMC ⟨H⟩ vs H-wave ``Energy_Total`` relative delta ≤ 1 %.
+  7. **G4**: composite element ``(i_c, s_c, j_c, t_c)`` from
+     ``composite_element.json`` survives the current SCF run and every
+     mutation in the M-gauge-1..5 + M-ship-1..5 matrix trips above
+     ``T_M = max(1e-5, 0.10 * |G_base|)`` per spec §4.4.
+
+  The gates run from
+  ``tests/validation/uhfk_mvmc_pairproduct/run.sh case_soc_rashba_2d_sub_apbc``;
+  each gate emits an anchored PASS line (``^GATE_NAME PASS mode=... ``)
+  verified by ``awk 'index($0, p) == 1'``.
+
+- **v3.6 hardening pass (Codex adversarial-review 2026-07-12)**. After
+  the initial Phase 6 seven-gate PASS, four rounds of adversarial
+  review surfaced a chain of findings that were subsequently addressed:
+
+  * **G1 / G2a / G2b real comparisons**: the initial dispatchers were
+    stubs that emitted PASS with ``max_abs_delta=0.0`` without
+    performing the claimed numeric comparison. Replaced by real
+    dispatchers in ``compare.py`` that read the workspace's H-wave
+    outputs, build the shipping A via ``build_slater_orbitals``, lift
+    ``green_sublattice`` via ``gauge_lift`` with the workspace's own
+    ``boundary_theta``, and compare against a strictly-parsed
+    ComplexUHF ``zvo_UHF_cisajs.dat``. Missing / truncated / malformed
+    / duplicate / out-of-range / non-finite ComplexUHF entries all
+    fail closed via a new ``ComplexUHFParseError``.
+
+  * **Cross-solver ComplexUHF seeding**: the H-wave broken-symmetry
+    minimum is not the same as ComplexUHF's random-init default under
+    Rashba + APBC; two independent SCFs converged to different valid
+    minima with 4.76e-2 element-wise density disagreement. Fix:
+    ``scripts/seed_complexuhf_from_hwave.py`` writes H-wave's shipping
+    A density into ComplexUHF's ``initial.def`` (5-line header for the
+    ``IgnoreLinesInDef=5`` convention) with a small Hermitian
+    ``perturb-scale`` (1e-6 for this fixture) so ComplexUHF actually
+    iterates (``run.sh`` asserts the SCF ran >= 1 step via awk-parse
+    of ``uhf.log``) but stays inside H-wave's basin. Post-seeding
+    ComplexUHF runs 9 SCF steps and converges to
+    ``Energy_Total = -25.3717166`` matching H-wave to 10 digits.
+
+  * **Snapshot-workspace rejection**: the snapshot guard resolved
+    ``tests/data`` relative to the process CWD, so invocation from
+    outside the repo silently bypassed the check. Fixed by anchoring
+    the tests/data root at the module's own directory
+    (``Path(__file__).resolve().parents[3]``); the guard now fails
+    closed if the anchored root is missing.
+
+  * **G4 shadow-copy drift**: the topology guard's
+    ``_build_A_ship_mutated`` reimplemented the SOC branch of
+    ``build_slater_orbitals`` inline and never proved its baseline
+    matched the canonical kernel. A drift in ``build_slater_orbitals``
+    could bypass G4. Fixed with a mandatory 1e-10 equality assertion
+    against the canonical kernel BEFORE running the mutation matrix.
+
+  * **Loader-injection env sanitization**: ``run.sh`` inherited the
+    caller's ``LD_LIBRARY_PATH`` / ``LD_PRELOAD`` / ``LD_AUDIT``
+    unchanged into ``vmcdry.out`` / ``vmc.out`` / ``UHF`` child
+    processes. Fixed by (a) top-level ``unset`` of those vars +
+    ``BASH_ENV`` / ``ENV``, (b) ``trap - DEBUG ERR RETURN EXIT`` to
+    clear inherited traps, (c) ``run_native()`` wrapper using
+    ``env -u LD_PRELOAD -u LD_AUDIT [-u LD_LIBRARY_PATH|
+    LD_LIBRARY_PATH=<validated>]`` for per-command sanitization
+    around every native solver invocation, and (d)
+    ``MVMC_LD_LIBRARY_PATH`` validation (absolute path, owned by
+    current user, not world-writable, single directory only).
+
+  Regression tests pin each finding: 5 tests for loader-env
+  sanitization (`tests/test_run_sh_loader_env_sanitize.py`), 6 tests
+  for the strict ComplexUHF parser
+  (`tests/test_uhfk_mvmc_pairproduct_compare_wiring.py`), 3 tests for
+  the CWD-independent snapshot guard
+  (`tests/test_snapshot_rejection_guard_v36.py`).
+
 Workflow
 ^^^^^^^^
 

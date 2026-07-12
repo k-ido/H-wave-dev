@@ -1,6 +1,7 @@
 """Tests for general_output_writer — v3 InOrbitalGeneral writer + aggregator."""
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -19,6 +20,7 @@ from tools._uhfk_to_mvmc.density_check import (
     DensityMismatchError,
     compare_against_onebodyg_uhf_general,
 )
+from tools._uhfk_to_mvmc.pair_product_density import parse_emitted_F
 
 
 def _antisym_F(nsite):
@@ -131,3 +133,104 @@ def test_compare_against_onebodyg_uhf_general_flags_mismatch():
         path = tmp.name
     with pytest.raises(DensityMismatchError, match="differ"):
         compare_against_onebodyg_uhf_general(G_all, path, tol=1e-10)
+
+
+def _write_golden_bridge_workspace(workspace_dir, golden):
+    """Write the minimal namelist.def, modpara.def, orbitalidx_general.def and
+    zqp_orbital_uhfk.dat files that ``parse_emitted_F`` consumes.
+
+    Uses the mVMC namelist -> ModPara -> Nsite chain (see spec §5.2). Only
+    the fields exercised by parse_emitted_F are populated; the other
+    namelist entries mirror the real bridge output for realism but are not
+    read by the parser.
+    """
+    Nsite = golden["Nsite"]
+    orbitalidx_rows = golden["orbitalidx"]
+    zqp_rows = golden["zqp"]
+
+    namelist_path = os.path.join(workspace_dir, "namelist.def")
+    modpara_path = os.path.join(workspace_dir, "modpara.def")
+    orbitalidx_path = os.path.join(
+        workspace_dir, "orbitalidx_general.def"
+    )
+    zqp_path = os.path.join(workspace_dir, "zqp_orbital_uhfk.dat")
+
+    with open(namelist_path, "w") as fp:
+        fp.write(f"         ModPara  {os.path.basename(modpara_path)}\n")
+        fp.write("  OrbitalGeneral  orbitalidx_general.def\n")
+        fp.write(
+            f"InOrbitalGeneral  {os.path.basename(zqp_path)}\n"
+        )
+    with open(modpara_path, "w") as fp:
+        fp.write("--------------------\n")
+        fp.write("Model_Parameters   0\n")
+        fp.write("--------------------\n")
+        fp.write(f"Nsite          {Nsite}\n")
+    # orbitalidx_general.def: 5 header lines + 15 mapping rows for Ns=3 +
+    # NOrbitalIdx optimize-flag rows.
+    n_orbital_idx = max(int(r["class_idx"]) for r in orbitalidx_rows) + 1
+    with open(orbitalidx_path, "w") as fp:
+        fp.write("=============================================\n")
+        fp.write(f"NOrbitalIdx {n_orbital_idx:10d}\n")
+        fp.write(f"ComplexType {1:10d}\n")
+        fp.write("=============================================\n")
+        fp.write("=============================================\n")
+        for r in orbitalidx_rows:
+            fp.write(
+                f"    {int(r['i']):3d}  {int(r['spn_i']):d}"
+                f"     {int(r['j']):3d}  {int(r['spn_j']):d}"
+                f"     {int(r['class_idx']):6d}  {int(r['sign']):2d}\n"
+            )
+        for k in range(n_orbital_idx):
+            fp.write(f"    {k:3d}      1\n")
+    with open(zqp_path, "w") as fp:
+        fp.write("======================\n")
+        fp.write(f"NOrbitalIdx  {n_orbital_idx}\n")
+        fp.write("======================\n")
+        fp.write("== i_j_OrbitalIdx ===\n")
+        fp.write("======================\n")
+        # Sort by class_idx to write in ascending index order.
+        for r in sorted(zqp_rows, key=lambda x: int(x["class_idx"])):
+            fp.write(
+                "{:d} {: .18e} {: .18e}\n".format(
+                    int(r["class_idx"]), float(r["re"]), float(r["im"])
+                )
+            )
+
+
+def test_parse_emitted_F_matches_golden(tmp_path):
+    """Load ``tests/data/v36_writer_check_golden.json``, materialize a minimal
+    but real bridge workspace, call ``parse_emitted_F`` and assert the
+    reconstructed F matches the golden expected F at atol=1e-15.
+
+    Adversarial fixture per spec §5.2: Nsite=3, non-sequential class ids,
+    sign=-1 row on a cross-spin upper-triangle pair, spin-block-
+    disambiguating row (i=1, spn_i=0, j=0, spn_j=1) -> all_i=1, all_j=3.
+    A parser using site-major ``all = spn + i * 2`` would place the
+    disambiguating row on ``(all_i=2, all_j=0)`` (lower triangle) and either
+    fail the antisymmetry pin or mis-locate the value; the golden expected
+    F traps that.
+    """
+    golden_path = os.path.join(
+        os.path.dirname(__file__), "data", "v36_writer_check_golden.json"
+    )
+    with open(golden_path) as fp:
+        golden = json.load(fp)
+
+    workspace = tmp_path / "bridge"
+    workspace.mkdir()
+    _write_golden_bridge_workspace(str(workspace), golden)
+
+    F = parse_emitted_F(str(workspace))
+    F_expected = np.array(golden["expected_F"]["real"], dtype=np.float64) + \
+        1j * np.array(golden["expected_F"]["imag"], dtype=np.float64)
+    assert F.shape == F_expected.shape == (
+        2 * golden["Nsite"], 2 * golden["Nsite"]
+    )
+    delta = float(np.max(np.abs(F - F_expected)))
+    assert delta < 1e-15, (
+        f"parse_emitted_F does not reproduce golden F at 1e-15; "
+        f"max abs delta = {delta}\n"
+        f"F[0,4] = {F[0,4]}, expected {F_expected[0,4]}\n"
+        f"F[1,3] = {F[1,3]}, expected {F_expected[1,3]}\n"
+    )

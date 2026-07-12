@@ -130,6 +130,125 @@ mVMC の PairProduct 状態を H-wave UHF の Slater 行列で初期化できる
   H-wave ``Energy_Total`` と 0.22% 一致 (delta -0.055 / 25.10)、
   gauge-lifted 密度 gate は 1e-10 で clean。
 
+スコープ (v3.6)
+^^^^^^^^^^^^^^^
+
+- **SOC + 単方向 APBC + SubShape > [1, 1, 1]** を v3.6 でサポートする。
+  ``build_slater_orbitals`` が sub_offset gauge
+  ``exp(-i k_folded · (folded_cell + sub_offset))`` と APBC twist
+  ``exp(-i theta · r_phys / L_phys)`` を合成し、shipping A に両位相が
+  一貫して乗る。``tools/_uhfk_to_mvmc/density_check.py`` の
+  ``gauge_lift`` は ``boundary_theta`` を受け取り、同じ合成変換で
+  ``green_sublattice`` を物理基底に持ち上げる。shipping 密度 gate
+  ``compare_against_green_sublattice(..., is_soc_sublattice_mode=True)``
+  は v3.6 の shipping fixture ``case_soc_rashba_2d_sub_apbc``
+  (``CellShape = [6, 4, 1]``, ``SubShape = [2, 2, 1]``,
+  ``BoundaryCondition = ["antiperiodic", "periodic", "periodic"]``,
+  ``enable_spin_orbital = true``, Rashba ``alpha = 0.5``, ``U = 2``,
+  ``Ncond = 8``) 上で 1e-10 を通過する。
+
+- **多方向 APBC (n_apbc_dirs >= 2) + SOC + SubShape > [1, 1, 1]**
+  は引き続き pre-dispatch で reject する。CLI reject メッセージ::
+
+      ERROR: enable_spin_orbital = true + multi-direction APBC
+      (n_apbc_dirs=<count>) + SubShape > [1, 1, 1] is deferred to v3.7.
+      Single-direction APBC + SOC + SubShape > 1 is supported in v3.6 as
+      of case_soc_rashba_2d_sub_apbc.
+
+  Phase 6 の dispatch 述語::
+
+      n_apbc_dirs = sum(1 for t in theta if abs(t - pi) < 1e-12
+                                       or abs(t + pi) < 1e-12)
+      if is_soc_mode and n_apbc_dirs > 1 and any(s != 1 for s in sub_shape):
+          return 2
+
+  多方向 APBC + SubShape > 1 の合成 twist gauge は第一原理からの
+  導出が E2E fixture 上で未検証 (``case_soc_rashba_2d_sub_apbc_apbc``
+  相当は v3.6 tree に無い)。誤った ``trans.def`` / shipping A を
+  silent に生成することを避けるため fail-fast で reject する。
+
+- **v3.6 七 gate 契約** (fresh workspace ``case_soc_rashba_2d_sub_apbc``
+  で全 gate が PASS)::
+
+    1. G0-writer-check: emitted-F の rank-lift ノイズ off 経路が
+       aggregate 済 (mapping, params) と 1e-10 で一致
+    2. G1: shipping ``build_slater_orbitals`` 密度が gauge_lift-lifted
+       ``green_sublattice`` と 1e-10 で一致
+    3. G2a-emitted-F: emitted-F projector 密度が ComplexUHF 一体
+       Green と 1e-6 で一致
+    4. G2a-in-memory-A: in-memory shipping A 密度が ComplexUHF と
+       1e-6 で一致
+    5. G2b: gauge-lifted ``green_sublattice`` が ComplexUHF と 1e-6 で一致
+    6. G3: mVMC ⟨H⟩ と H-wave ``Energy_Total`` の相対 delta ≤ 1 %
+    7. G4: ``composite_element.json`` の合成 ``(i_c, s_c, j_c, t_c)``
+       が現行 SCF 上で維持され、M-gauge-1..5 + M-ship-1..5 の 10
+       mutation 全てが ``T_M = max(1e-5, 0.10 * |G_base|)`` (spec §4.4)
+       を超過
+
+  gate は
+  ``tests/validation/uhfk_mvmc_pairproduct/run.sh case_soc_rashba_2d_sub_apbc``
+  から実行される。各 gate は
+  ``^GATE_NAME PASS mode=... `` 形式の anchored PASS 行を出力し、
+  ``awk 'index($0, p) == 1'`` で検証する。
+
+- **v3.6 hardening pass (Codex adversarial-review 2026-07-12)**。
+  Phase 6 の初回 seven-gate PASS 後、4 ラウンドの adversarial review で
+  一連の findings が浮上し、以下のように修正した:
+
+  * **G1 / G2a / G2b 実比較**: 初回の dispatcher は ``max_abs_delta=0.0``
+    で PASS を印字する stub で、実際の numeric 比較は行っていなかった。
+    ``compare.py`` を全面書き換えし、workspace の H-wave outputs を読み
+    込んで ``build_slater_orbitals`` で shipping A を組み、
+    ``gauge_lift`` (workspace の ``boundary_theta``) で
+    ``green_sublattice`` を持ち上げ、strict-parse された ComplexUHF
+    ``zvo_UHF_cisajs.dat`` と比較する形にした。ファイル欠損 / 打切り /
+    形式不正 / 重複 / 範囲外 / 非有限値は新設 ``ComplexUHFParseError``
+    で fail closed。
+
+  * **ComplexUHF Cross-solver seeding**: Rashba + APBC 下で H-wave の
+    broken-symmetry 極小と ComplexUHF の random-init default は異なり、
+    2 つの独立 SCF が別の valid 極小に落ちて 4.76e-2 の要素毎密度差が
+    生じた。修正: ``scripts/seed_complexuhf_from_hwave.py`` が
+    H-wave の shipping A 密度を ComplexUHF ``initial.def`` (
+    ``IgnoreLinesInDef=5`` 規約に沿った 5 行 header) に書き出し、微小な
+    Hermitian ``perturb-scale`` (このフィクスチャでは 1e-6) を付与
+    することで ComplexUHF を実際に反復させる (``run.sh`` が
+    ``uhf.log`` の ``finished at N step`` を awk parse し N >= 1 を強制)
+    が H-wave の basin を離脱しない範囲に留める。seeding 後の
+    ComplexUHF は 9 SCF steps 走り ``Energy_Total = -25.3717166``
+    (H-wave と 10 桁一致) に収束する。
+
+  * **Snapshot workspace rejection**: snapshot guard が ``tests/data``
+    をプロセス CWD 基準で resolve していたため、リポジトリ外から起動
+    すると check が silent に bypass されていた。修正: guard module
+    自身の場所 (``Path(__file__).resolve().parents[3]``) に anchor し、
+    anchored root が存在しなければ fail closed。
+
+  * **G4 shadow-copy drift**: topology guard の
+    ``_build_A_ship_mutated`` が SOC branch を inline に再実装しつつ、
+    baseline を canonical kernel と比較していなかった。
+    ``build_slater_orbitals`` に drift が入っても G4 が見逃す可能性が
+    あった。修正: mutation matrix 実行前に canonical kernel との 1e-10
+    等値 assert を必須化。
+
+  * **Loader-injection env sanitization**: ``run.sh`` が caller 側の
+    ``LD_LIBRARY_PATH`` / ``LD_PRELOAD`` / ``LD_AUDIT`` を子プロセス
+    (``vmcdry.out`` / ``vmc.out`` / ``UHF``) にそのまま継承していた。
+    修正: (a) 上記変数 + ``BASH_ENV`` / ``ENV`` を top-level で
+    ``unset``, (b) ``trap - DEBUG ERR RETURN EXIT`` で継承 trap を
+    クリア, (c) ``run_native()`` wrapper が
+    ``env -u LD_PRELOAD -u LD_AUDIT [-u LD_LIBRARY_PATH|
+    LD_LIBRARY_PATH=<validated>]`` を用いて各 native solver 呼び出し
+    毎に per-command 消毒, (d) ``MVMC_LD_LIBRARY_PATH`` を絶対パス /
+    現在の user 所有 / non-world-writable / 単一ディレクトリで validate。
+
+  各 findings に対応する regression tests を追加: loader-env
+  sanitization に 5 tests (`tests/test_run_sh_loader_env_sanitize.py`)、
+  ComplexUHF strict parser に 6 tests
+  (`tests/test_uhfk_mvmc_pairproduct_compare_wiring.py`)、
+  CWD-independent snapshot guard に 3 tests
+  (`tests/test_snapshot_rejection_guard_v36.py`)。
+
 ワークフロー
 ^^^^^^^^^^^^
 

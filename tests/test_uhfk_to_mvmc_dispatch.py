@@ -564,21 +564,19 @@ def test_dispatch_soc_subshape_no_longer_rejects():
         assert "Codex v3.4 Rev.2" not in res.stderr, res.stderr
 
 
-def test_dispatch_soc_apbc_subshape_rejects_pre_dispatch():
-    """SOC + APBC + SubShape > [1, 1, 1] triple combination is not
-    shippable in v3.5 (deferred to v3.6+ per spec §8 non-goals).
+def test_dispatch_soc_single_apbc_subshape_no_longer_rejects_pre_dispatch():
+    """v3.6 lifts the single-direction reject that v3.5 kept.
 
-    v3.4 Rev.1 finding 2 (commit f8ab6ba) called out this triple
-    combination as UNVALIDATED because only two-way subsets had E2E
-    fixtures:
-      - case_soc_rashba_2d_nosub_apbc: SOC + APBC (0.03% delta).
-      - case_soc_rashba_2d_sub:        SOC + SubShape (0.22% delta).
-    v3.4 Rev.2 (commit 6fba3e5) temporarily subsumed this reject under a
-    broader SOC + SubShape defer message. v3.5 Phase D lifts the broader
-    SOC + SubShape reject (gauge_lift now validates the shipping A
-    independently), so the triple-specific v3.4 Rev.1 message is
-    restored for the SOC + APBC + SubShape combination which still lacks
-    an E2E fixture.
+    Under v3.5 the ``SOC + APBC + SubShape > [1, 1, 1]`` triple was
+    unconditionally deferred at the pre-dispatch check. v3.6 (spec §8)
+    narrows that reject to the multi-direction case only, because
+    ``case_soc_rashba_2d_sub_apbc`` (single-direction AP-P-P) is now
+    validated end-to-end by the seven-gate contract.
+
+    This test verifies the single-direction path no longer hits the
+    pre-dispatch reject message; downstream code may still fail with
+    unrelated errors on the minimal input this test constructs, but the
+    ``"multi-direction APBC ... deferred"`` message MUST NOT appear.
     """
     Nsite = 4
     subvol = 2
@@ -641,18 +639,21 @@ def test_dispatch_soc_apbc_subshape_rejects_pre_dispatch():
                 "--emit-orbitalidx", emit_orbitalidx_path,
             ),
         )
-        assert res.returncode == 2, (
-            f"expected pre-dispatch reject with returncode 2, got "
-            f"{res.returncode}; stderr={res.stderr!r}"
+        # v3.6: single-direction APBC + SubShape > 1 no longer hits the
+        # pre-dispatch reject. Downstream failures on this minimal input
+        # are expected (the emitter needs real geometry / orbital data),
+        # but the narrowed-reject message MUST NOT appear.
+        assert "multi-direction APBC" not in res.stderr, (
+            f"single-direction APBC must not trip the multi-direction "
+            f"reject in v3.6. stderr={res.stderr!r}"
         )
-        # v3.5: broader SOC+SubShape reject is lifted; SOC+APBC+SubShape
-        # falls through to the v3.4 Rev.1 finding 2 triple-specific
-        # reject (Deferred to v3.6+).
         assert (
             "antiperiodic BC + SubShape > [1, 1, 1] is not yet validated"
-            in res.stderr
-        ), res.stderr
-        assert "Deferred to a future spec" in res.stderr, res.stderr
+            not in res.stderr
+        ), (
+            "v3.5 legacy reject message must not fire in v3.6. "
+            f"stderr={res.stderr!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -802,3 +803,80 @@ def test_dispatch_rejects_soc_emit_trans_directory_target():
         assert not os.path.exists(output_path), (
             "zqp output leaked despite emit-trans directory reject"
         )
+
+
+def test_dispatch_soc_multi_apbc_subshape_rejects_pre_dispatch():
+    """v3.6 narrowed reject (spec §8): SOC + multi-direction APBC
+    (n_apbc_dirs >= 2) + SubShape > [1, 1, 1] remains deferred to v3.7.
+    Single-direction APBC + SubShape > 1 SHIPS in v3.6 via
+    ``case_soc_rashba_2d_sub_apbc``. Complements the positive-path pin
+    ``test_dispatch_soc_single_apbc_subshape_no_longer_rejects``.
+    """
+    Nsite = 4
+    subvol = 2
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, "input.toml"), "w") as fp:
+            fp.write(
+                "[mode.param]\n"
+                "Ncond = 2\n"
+                "2Sz = 0\n"
+                "T = 0.0\n"
+                f"CellShape = [{Nsite}, {Nsite}, 1]\n"
+                "SubShape  = [2, 2, 1]\n"
+                'BoundaryCondition = ["antiperiodic", "antiperiodic", "periodic"]\n'
+                "enable_spin_orbital = true\n"
+            )
+        nd = 2 * subvol
+        L_folded = Nsite // subvol
+        np.savez(
+            os.path.join(tmp, "eigen.npz"),
+            eigenvalue=np.zeros((L_folded, nd), dtype=np.float64),
+            eigenvector=np.eye(nd, dtype=np.complex128).reshape(1, nd, nd)
+            .repeat(L_folded, axis=0),
+            wavevector_unit=np.eye(3, dtype=np.float64),
+            wavevector_index=np.array(
+                [[v, 0, 0] for v in range(L_folded)], dtype=np.int64,
+            ),
+            twist_offset=np.array([0.5, 0.5, 0.0], dtype=np.float64),
+        )
+        occ = np.zeros((Nsite * Nsite, 2), dtype=np.float64)
+        np.savez(
+            os.path.join(tmp, "occupation.npz"),
+            occupation=occ,
+            mu=np.array([0.0, 0.0], dtype=np.float64),
+            T=np.float64(0.0),
+            column_spin=np.array([0, 1], dtype=np.int64),
+            column_mu_group=np.array([0, 1], dtype=np.int64),
+        )
+        with open(os.path.join(tmp, "geometry_uhf.dat"), "w") as fp:
+            fp.write("1.0 0.0 0.0\n0.0 1.0 0.0\n0.0 0.0 1.0\n")
+            fp.write("0.0 0.0 0.0\n")
+            fp.write(f"{Nsite} 0 0\n0 {Nsite} 0\n0 0 1\n")
+            for iy in range(Nsite):
+                for ix in range(Nsite):
+                    fp.write(f"{ix} {iy} 0 0\n")
+        transfer_path = os.path.join(tmp, "Transfer.dat")
+        with open(transfer_path, "w") as fp:
+            fp.write("test Transfer.dat\n")
+            fp.write("1\n")
+            fp.write("2\n")
+            fp.write("1 1\n")
+            fp.write("   1  0  0  1  1  -1.0  0.0\n")
+            fp.write("  -1  0  0  1  1  -1.0  0.0\n")
+        emit_trans_path = os.path.join(tmp, "trans.def.bridge")
+        emit_orbitalidx_path = os.path.join(tmp, "orbitalidxgen.def.bridge")
+        res = _run_cli(
+            tmp, _minimal_general_orbitalidx(nsite=Nsite * Nsite),
+            extra_args=(
+                "--transfer", transfer_path,
+                "--emit-trans", emit_trans_path,
+                "--emit-orbitalidx", emit_orbitalidx_path,
+            ),
+        )
+        assert res.returncode == 2, (
+            "v3.6 narrowed reject: SOC + multi-direction APBC + "
+            "SubShape > 1 must fire pre-dispatch (deferred to v3.7). "
+            f"Got returncode={res.returncode}; stderr={res.stderr!r}"
+        )
+        assert "multi-direction APBC" in res.stderr, res.stderr
+        assert "deferred to v3.7" in res.stderr, res.stderr

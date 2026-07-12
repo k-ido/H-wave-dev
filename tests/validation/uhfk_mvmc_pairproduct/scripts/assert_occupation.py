@@ -116,6 +116,24 @@ _CASE_TARGETS: dict[str, dict] = {
             (-1, -1, 0): 1,
         },
     },
+    "case_soc_rashba_2d_sub_apbc": {
+        # v3.6 shipping fixture. Same geometry (CellShape [6,4,1] /
+        # SubShape [2,2,1]) as case_soc_rashba_2d_sub but with
+        # BoundaryCondition = ["antiperiodic", "periodic", "periodic"]
+        # (theta = (pi, 0, 0)). The twist shifts the folded k-mesh so
+        # the SCF fills three k rows with 2 carriers each and two k rows
+        # with 1 carrier each; the (1, -1, 0) k row lands above the
+        # Fermi level and is empty (dropped from the target because
+        # _occupied_per_k_soc omits zero-carrier k rows). Sum = 2*3 +
+        # 1*2 = 8 = Ncond.
+        "n_per_k": {
+            (0, 0, 0): 2,
+            (0, -1, 0): 1,
+            (1, 0, 0): 2,
+            (-1, 0, 0): 2,
+            (-1, -1, 0): 1,
+        },
+    },
 }
 
 

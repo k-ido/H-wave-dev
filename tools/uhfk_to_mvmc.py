@@ -40,6 +40,35 @@ from tools._uhfk_to_mvmc.boundary_input import (
 )
 
 
+def _debug_dump_writer_frames(args, F_pre_noise, params, mapping):
+    """Under --debug-writer, dump F_pre_noise.npz and F_post_aggregate.npz
+    next to --output for the v3.6 G0-writer-check gate (spec §1.4).
+
+    F_pre_noise: F built by build_fij_general(A) before rank-lift noise.
+    F_post_aggregate: F reconstructed from (mapping, params) using the
+        same algorithm parse_emitted_F applies to the emitted zqp file.
+        Under --epsilon-noise 0 the two are numerically identical.
+    """
+    if not getattr(args, "debug_writer", False):
+        return
+    out_dir = os.path.dirname(os.path.abspath(args.output)) or "."
+    # 2*Nsite is the row dimension of F_pre_noise; use its shape rather
+    # than reparsing namelist.def.
+    n = int(F_pre_noise.shape[0])
+    F_post = np.zeros((n, n), dtype=np.complex128)
+    for (all_i, all_j), (idx, sign) in mapping.items():
+        if idx < 0:
+            continue
+        F_post[all_i, all_j] = sign * params[idx]
+        F_post[all_j, all_i] = -F_post[all_i, all_j]
+    np.savez_compressed(
+        os.path.join(out_dir, "F_pre_noise.npz"), F=F_pre_noise,
+    )
+    np.savez_compressed(
+        os.path.join(out_dir, "F_post_aggregate.npz"), F=F_post,
+    )
+
+
 def _column_spin_to_mu_group_is_bijective(column_spin, column_mu_group):
     """True iff column_spin=0 cols share one mu_group and column_spin=1
     cols share a different mu_group (bijective spin<->mu_group)."""
@@ -84,6 +113,26 @@ def main(argv=None):
     parser.add_argument(
         "--rng-seed", type=int, default=7919,
         help="Seed for the noise RNG (default: 7919, reproducible).",
+    )
+    # v3.6 spec §1.4 G0-writer-check producer contract: when set, dump
+    # F_pre_noise.npz (in-memory F before rank-lift noise, i.e. the F built
+    # by build_fij_general(A)) and F_post_aggregate.npz (F reconstructed
+    # from the mapping + params returned by aggregate_general_orbital_params,
+    # i.e. the F that mVMC will materialize from the emitted zqp file)
+    # into the same directory as --output. Under --epsilon-noise 0 the two
+    # dumps MUST be identical; the G0 test asserts this. Under the shipping
+    # 1e-8 rank-lift, F_post_aggregate carries the intentional noise while
+    # F_pre_noise stays clean. Only the General path emits these dumps;
+    # the AntiParallel path is v1 (out of v3.6 gate scope) and ignores the
+    # flag.
+    parser.add_argument(
+        "--debug-writer", dest="debug_writer", action="store_true",
+        default=False,
+        help=(
+            "Dump F_pre_noise.npz and F_post_aggregate.npz next to "
+            "--output. Enables the v3.6 G0-writer-check gate. See spec "
+            "§1.4."
+        ),
     )
     # v3.1 spec §3.8: SOC path additionally emits mVMC trans.def from
     # H-wave Transfer.dat because StdFace's HubbardGC generator drops
@@ -209,14 +258,28 @@ def main(argv=None):
     # end-to-end validation, so we fail-fast pre-dispatch. When a future
     # spec adds a SOC+APBC+SubShape fixture and empirical <H> validation,
     # remove this guard (v3.6+, see §8 non-goals).
-    if is_soc_mode and has_apbc and any(int(s) != 1 for s in sub_shape):
+    # v3.6 spec §8 narrowed reject (spec docs/superpowers/specs/
+    # 2026-07-09-uhfk-mvmc-pairproduct-general-v36-design.md): single-
+    # direction APBC + SOC + SubShape > 1 is SHIPPING under v3.6, covered
+    # by case_soc_rashba_2d_sub_apbc. Multi-direction APBC + SOC +
+    # SubShape > 1 (AP-AP-P, AP-AP-AP) still lacks a fixture / gate and
+    # remains rejected pre-dispatch until v3.7 lands the multi-direction
+    # gauge composition + fixture. The narrower reject is deliberately
+    # scoped so a nested / unusual layout produces a clean fail-fast
+    # rather than a silent wrong-file selection downstream.
+    n_apbc_dirs = int(
+        np.sum(np.abs(theta - np.pi) < 1e-12) + np.sum(np.abs(theta + np.pi) < 1e-12)
+    )
+    if (
+        is_soc_mode
+        and n_apbc_dirs > 1
+        and any(int(s) != 1 for s in sub_shape)
+    ):
         print(
-            "ERROR: enable_spin_orbital = true + antiperiodic BC + "
-            "SubShape > [1, 1, 1] is not yet validated. "
-            "case_soc_rashba_2d_nosub_apbc covers SOC+APBC (0.03% delta); "
-            "case_soc_rashba_2d_sub covers SOC+SubShape (0.22% delta); "
-            "the composed SOC+APBC+SubShape phase path has no fixture. "
-            "Deferred to a future spec.",
+            "ERROR: enable_spin_orbital = true + multi-direction APBC "
+            f"(n_apbc_dirs={n_apbc_dirs}) + SubShape > [1, 1, 1] is "
+            "deferred to v3.7. Single-direction APBC + SOC + SubShape > 1 "
+            "is supported in v3.6 as of case_soc_rashba_2d_sub_apbc.",
             file=sys.stderr,
         )
         return 2
@@ -476,6 +539,11 @@ def main(argv=None):
             complex_type=info_general["complex_type"],
             rng=np.random.default_rng(args.rng_seed),
         )
+        # v3.6 G0-writer-check producer step. `_debug_dump_writer_frames`
+        # is a no-op unless --debug-writer is set.
+        _debug_dump_writer_frames(
+            args, F_general, params, info_general["mapping"],
+        )
         if args.check_density:
             if args.onebodyg_uhf is None:
                 print(
@@ -531,6 +599,7 @@ def main(argv=None):
                         Ns=Ns,
                         tol=1e-10,
                         is_soc_sublattice_mode=True,
+                        boundary_theta=tuple(boundary_theta_tuple),
                     )
                 except DensityMismatchError as e:
                     print(
