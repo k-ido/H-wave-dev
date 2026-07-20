@@ -17,10 +17,12 @@ launched here. These tests confirm:
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 
 _REPO = Path(__file__).resolve().parents[1]
@@ -31,6 +33,24 @@ _APBC_CU_COMPARE = _REPO / "tests" / "validation" / "apbc_complexuhf" / \
 _SHIPPING_CASE = _REPO / "tests" / "validation" / "uhfk_mvmc_pairproduct" / \
     "case_soc_rashba_2d_sub_apbc"
 _DATA_DIR = _REPO / "tests" / "data"
+_GREENONE_SNAPSHOT = (
+    _DATA_DIR / "v36_case_soc_rashba_2d_sub_apbc_greenone.dat"
+)
+_PARSER_WORKSPACE: Path | None = None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _parser_workspace(tmp_path_factory):
+    """Build a parser workspace from a tracked greenone excerpt."""
+    global _PARSER_WORKSPACE
+
+    workspace = tmp_path_factory.mktemp("apbc-greenone-parser")
+    output = workspace / "output"
+    output.mkdir()
+    shutil.copy2(_GREENONE_SNAPSHOT, output / "greenone.dat")
+    _PARSER_WORKSPACE = workspace
+    yield
+    _PARSER_WORKSPACE = None
 
 
 def test_apbc_complexuhf_soc_fixture_has_required_files():
@@ -117,7 +137,7 @@ def test_read_greenone_parses_soc_cross_spin_rows_on_hwave_snapshot():
     """Phase 5b: the parser must round-trip the 4-index (i, s, j, t)
     SOC layout on a real H-wave greenone.dat under APBC + SubShape.
 
-    Uses the shipping fixture's greenone.dat (produced by Phase 2 SCF).
+    Uses a tracked excerpt of the Phase 2 SCF greenone.dat.
     Asserts:
       - parser returns > 0 rows
       - at least one non-zero cross-spin (s != t) row exists (this is
@@ -125,10 +145,10 @@ def test_read_greenone_parses_soc_cross_spin_rows_on_hwave_snapshot():
         would silently drop these)
       - the parsed dict's values are complex128-compatible.
     """
-    greenone = _SHIPPING_CASE / "output" / "greenone.dat"
+    assert _PARSER_WORKSPACE is not None
+    greenone = _PARSER_WORKSPACE / "output" / "greenone.dat"
     assert greenone.is_file(), (
-        f"missing shipping greenone.dat at {greenone}; Phase 2 SCF "
-        "outputs must be committed for Phase 5 smoke coverage."
+        f"missing tracked parser greenone.dat at {greenone}"
     )
     mod = _load_apbc_compare_module()
     parsed = mod._read_greenone(greenone)

@@ -564,19 +564,16 @@ def test_dispatch_soc_subshape_no_longer_rejects():
         assert "Codex v3.4 Rev.2" not in res.stderr, res.stderr
 
 
-def test_dispatch_soc_single_apbc_subshape_no_longer_rejects_pre_dispatch():
-    """v3.6 lifts the single-direction reject that v3.5 kept.
+def test_dispatch_soc_single_apbc_arbitrary_subshape_rejected_by_v37_allowlist():
+    """v3.7 narrows v3.6's blanket "any single-direction APBC + any
+    SubShape > 1" acceptance to two exact shipping shapes:
+      (a) v3.6: CellShape=[6,4,1] / SubShape=[2,2,1]
+      (b) v3.7: CellShape=[4,4,4] / SubShape=[2,2,2]
 
-    Under v3.5 the ``SOC + APBC + SubShape > [1, 1, 1]`` triple was
-    unconditionally deferred at the pre-dispatch check. v3.6 (spec §8)
-    narrows that reject to the multi-direction case only, because
-    ``case_soc_rashba_2d_sub_apbc`` (single-direction AP-P-P) is now
-    validated end-to-end by the seven-gate contract.
-
-    This test verifies the single-direction path no longer hits the
-    pre-dispatch reject message; downstream code may still fail with
-    unrelated errors on the minimal input this test constructs, but the
-    ``"multi-direction APBC ... deferred"`` message MUST NOT appear.
+    An arbitrary non-shipping shape like CellShape=[4,1,1] /
+    SubShape=[2,1,1] with single-direction APBC MUST be rejected
+    pre-dispatch with the v3.7 allowlist's REJECT_MESSAGE, even though
+    v3.6's blanket single-direction-APBC check would have admitted it.
     """
     Nsite = 4
     subvol = 2
@@ -639,21 +636,18 @@ def test_dispatch_soc_single_apbc_subshape_no_longer_rejects_pre_dispatch():
                 "--emit-orbitalidx", emit_orbitalidx_path,
             ),
         )
-        # v3.6: single-direction APBC + SubShape > 1 no longer hits the
-        # pre-dispatch reject. Downstream failures on this minimal input
-        # are expected (the emitter needs real geometry / orbital data),
-        # but the narrowed-reject message MUST NOT appear.
-        assert "multi-direction APBC" not in res.stderr, (
-            f"single-direction APBC must not trip the multi-direction "
-            f"reject in v3.6. stderr={res.stderr!r}"
+        from tools._uhfk_to_mvmc.allowlist_predicate import REJECT_MESSAGE
+
+        # v3.7: single-direction APBC on a non-shipping CellShape/SubShape
+        # (here [4,1,1]/[2,1,1]) is not one of the two allowlisted
+        # (apbc_mask, sub_shape, cell_shape) triples, so it must be
+        # rejected pre-dispatch with the v3.7 REJECT_MESSAGE.
+        assert res.returncode == 2, (
+            "v3.7 allowlist: single-direction APBC on a non-shipping "
+            "CellShape/SubShape must be rejected pre-dispatch. Got "
+            f"returncode={res.returncode}; stderr={res.stderr!r}"
         )
-        assert (
-            "antiperiodic BC + SubShape > [1, 1, 1] is not yet validated"
-            not in res.stderr
-        ), (
-            "v3.5 legacy reject message must not fire in v3.6. "
-            f"stderr={res.stderr!r}"
-        )
+        assert REJECT_MESSAGE in res.stderr, res.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -806,11 +800,15 @@ def test_dispatch_rejects_soc_emit_trans_directory_target():
 
 
 def test_dispatch_soc_multi_apbc_subshape_rejects_pre_dispatch():
-    """v3.6 narrowed reject (spec §8): SOC + multi-direction APBC
-    (n_apbc_dirs >= 2) + SubShape > [1, 1, 1] remains deferred to v3.7.
-    Single-direction APBC + SubShape > 1 SHIPS in v3.6 via
-    ``case_soc_rashba_2d_sub_apbc``. Complements the positive-path pin
-    ``test_dispatch_soc_single_apbc_subshape_no_longer_rejects``.
+    """v3.7 §8 allowlist (spec docs/superpowers/specs/2026-07-12-uhfk-
+    mvmc-pairproduct-general-v37-design.md): SOC + multi-direction APBC
+    (xy mask) + SubShape=[2,2,1] on CellShape=[4,4,1] is not one of the
+    two validated (apbc_mask, sub_shape, cell_shape) triples in
+    ``tools._uhfk_to_mvmc.allowlist_predicate`` (v3.6's shipping shape
+    is CellShape=[6,4,1]/SubShape=[2,2,1]; v3.7's is
+    CellShape=[4,4,4]/SubShape=[2,2,2]), so it remains pre-dispatch
+    rejected. Complements the shape-narrowing pin
+    ``test_dispatch_soc_single_apbc_arbitrary_subshape_rejected_by_v37_allowlist``.
     """
     Nsite = 4
     subvol = 2
@@ -873,10 +871,12 @@ def test_dispatch_soc_multi_apbc_subshape_rejects_pre_dispatch():
                 "--emit-orbitalidx", emit_orbitalidx_path,
             ),
         )
+        from tools._uhfk_to_mvmc.allowlist_predicate import REJECT_MESSAGE
+
         assert res.returncode == 2, (
-            "v3.6 narrowed reject: SOC + multi-direction APBC + "
-            "SubShape > 1 must fire pre-dispatch (deferred to v3.7). "
-            f"Got returncode={res.returncode}; stderr={res.stderr!r}"
+            "v3.7 allowlist: SOC + APBC + SubShape combination not "
+            "covered by tools._uhfk_to_mvmc.allowlist_predicate must "
+            f"fire pre-dispatch. Got returncode={res.returncode}; "
+            f"stderr={res.stderr!r}"
         )
-        assert "multi-direction APBC" in res.stderr, res.stderr
-        assert "deferred to v3.7" in res.stderr, res.stderr
+        assert REJECT_MESSAGE in res.stderr, res.stderr

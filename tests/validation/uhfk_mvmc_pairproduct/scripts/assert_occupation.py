@@ -134,6 +134,104 @@ _CASE_TARGETS: dict[str, dict] = {
             (-1, -1, 0): 1,
         },
     },
+    "case_soc_rashba_3d_sub_apbc_xy": {
+        # v3.7 shipping fixture. 3D 4x4x4 lattice, SubShape = [2, 2, 2]
+        # (folded BZ [2, 2, 2], 8 k rows), BoundaryCondition =
+        # ["antiperiodic", "antiperiodic", "periodic"] (theta = (pi, pi,
+        # 0), xy-plane APBC). Ncond = 20, pinned in Phase 2b across all 4
+        # v3.7 siblings (see README.md). Unlike the 2D fixtures, every one
+        # of the 8 folded k rows is occupied here: the 4 rows with
+        # k_z = 0 carry 3 carriers each and the 4 rows with k_z = -1 carry
+        # 2 each. Sum = 4*3 + 4*2 = 20 = Ncond. Measured from fresh
+        # H-wave SCF output (converged at iteration 38, rest=5.6e-15,
+        # Energy_Total=-81.585984556...) on 2026-07-13.
+        "n_per_k": {
+            (0, 0, 0): 3,
+            (0, 0, -1): 2,
+            (0, -1, 0): 3,
+            (0, -1, -1): 2,
+            (-1, 0, 0): 3,
+            (-1, 0, -1): 2,
+            (-1, -1, 0): 3,
+            (-1, -1, -1): 2,
+        },
+    },
+    "case_soc_rashba_3d_sub_apbc_xz": {
+        # v3.7 shipping fixture. Same lattice as
+        # case_soc_rashba_3d_sub_apbc_xy but BoundaryCondition =
+        # ["antiperiodic", "periodic", "antiperiodic"] (theta = (pi, 0,
+        # pi), xz-plane APBC). Ncond = 20 (same cross-fixture pin). All 8
+        # folded k rows occupied: 2 rows carry 4 carriers each
+        # ((0, 0, -1) and (-1, 0, 0)) and the remaining 6 rows carry 2
+        # each. Sum = 2*4 + 6*2 = 20 = Ncond. Measured from fresh H-wave
+        # SCF output (converged at iteration 38, rest=5.6e-15,
+        # Energy_Total=-82.159807378...) on 2026-07-13.
+        "n_per_k": {
+            (0, 0, 0): 2,
+            (0, 0, -1): 4,
+            (0, -1, 0): 2,
+            (0, -1, -1): 2,
+            (-1, 0, 0): 4,
+            (-1, 0, -1): 2,
+            (-1, -1, 0): 2,
+            (-1, -1, -1): 2,
+        },
+    },
+    "case_soc_rashba_3d_sub_apbc_yz": {
+        # v3.7 shipping fixture. Same lattice as
+        # case_soc_rashba_3d_sub_apbc_xy but BoundaryCondition =
+        # ["periodic", "antiperiodic", "antiperiodic"] (theta = (0, pi,
+        # pi), yz-plane APBC). Ncond = 24 -- NOT the cross-fixture
+        # Ncond=20 pin used by xy/xz: at Ncond=20 this fixture violates
+        # build_pair_list's SOC pairing invariant n_occ(k) ==
+        # n_occ(partner(k)) (k=2 vs partner=1: 2 != 4), which blocks
+        # Phase 2d composite manifest generation. Ncond=24 is the value
+        # that satisfies both the spec's gap>=5e-2 floor and the
+        # partner-balance invariant (see README.md "Ncond selection").
+        # All 8 folded k rows occupied: 4 rows carry 4 carriers each
+        # ((0,0,0), (0,0,-1), (0,-1,0), (0,-1,-1)) and the remaining 4
+        # rows carry 2 each. Sum = 4*4 + 4*2 = 24 = Ncond. Measured from
+        # fresh H-wave SCF output (converged at iteration 38,
+        # rest=6.154e-15, Energy_Total=-91.053487053...) on 2026-07-13.
+        "n_per_k": {
+            (0, 0, 0): 4,
+            (0, 0, -1): 4,
+            (0, -1, 0): 4,
+            (0, -1, -1): 4,
+            (-1, 0, 0): 2,
+            (-1, 0, -1): 2,
+            (-1, -1, 0): 2,
+            (-1, -1, -1): 2,
+        },
+    },
+    "case_soc_rashba_3d_sub_apbc_xyz": {
+        # v3.7 shipping fixture. Same lattice as
+        # case_soc_rashba_3d_sub_apbc_xy but BoundaryCondition =
+        # ["antiperiodic", "antiperiodic", "antiperiodic"] (theta = (pi,
+        # pi, pi), full 3D APBC). Ncond = 12 -- NOT the cross-fixture
+        # Ncond=20 pin used by xy/xz: at Ncond=20 this fixture violates
+        # build_pair_list's SOC pairing invariant n_occ(k) ==
+        # n_occ(partner(k)) (k=4 vs partner=3: 2 != 4), which blocks
+        # Phase 2d composite manifest generation. Ncond=12 is the ONLY
+        # value in {12,...,24} that satisfies both the spec's gap>=5e-2
+        # floor and the partner-balance invariant (see README.md "Ncond
+        # selection"). All 8 folded k rows occupied: 4 rows carry 2
+        # carriers each ((0,0,-1), (0,-1,-1), (-1,0,0), (-1,-1,0)) and
+        # the remaining 4 rows carry 1 each. Sum = 4*2 + 4*1 = 12 =
+        # Ncond. Measured from fresh H-wave SCF output (converged at
+        # iteration 37, rest=8.702e-15, Energy_Total=-55.672715711...)
+        # on 2026-07-13.
+        "n_per_k": {
+            (0, 0, 0): 1,
+            (0, 0, -1): 2,
+            (0, -1, 0): 1,
+            (0, -1, -1): 2,
+            (-1, 0, 0): 2,
+            (-1, 0, -1): 1,
+            (-1, -1, 0): 2,
+            (-1, -1, -1): 1,
+        },
+    },
 }
 
 

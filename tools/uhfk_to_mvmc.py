@@ -69,6 +69,47 @@ def _debug_dump_writer_frames(args, F_pre_noise, params, mapping):
     )
 
 
+class OutputPathCollisionError(ValueError):
+    """Raised when a requested output aliases another path in the run."""
+
+
+def _paths_refer_to_same_file(path_a, path_b):
+    """Return whether two paths name the same current or future file."""
+    real_a = os.path.realpath(path_a)
+    real_b = os.path.realpath(path_b)
+    if real_a == real_b:
+        return True
+    if not (os.path.exists(path_a) and os.path.exists(path_b)):
+        return False
+    try:
+        return os.path.samefile(path_a, path_b)
+    except FileNotFoundError:
+        # A concurrent removal makes the existing-file identity check
+        # inapplicable; realpath equality above still covers path aliases.
+        return False
+
+
+def _preflight_output_collisions(output_paths, input_paths):
+    """Reject output/output and output/input aliases before any write."""
+    for index, (label_a, path_a) in enumerate(output_paths):
+        for label_b, path_b in output_paths[index + 1:]:
+            if _paths_refer_to_same_file(path_a, path_b):
+                raise OutputPathCollisionError(
+                    f"{label_a} and {label_b} output destinations resolve "
+                    f"to the same path or file "
+                    f"({os.path.realpath(path_a)!r}, "
+                    f"{os.path.realpath(path_b)!r}); they must be distinct"
+                )
+        for input_label, input_path in input_paths:
+            if _paths_refer_to_same_file(path_a, input_path):
+                raise OutputPathCollisionError(
+                    f"{label_a} output and {input_label} input resolve to "
+                    f"the same file ({os.path.realpath(path_a)!r}, "
+                    f"{os.path.realpath(input_path)!r}); refusing to "
+                    "overwrite an input"
+                )
+
+
 def _column_spin_to_mu_group_is_bijective(column_spin, column_mu_group):
     """True iff column_spin=0 cols share one mu_group and column_spin=1
     cols share a different mu_group (bijective spin<->mu_group)."""
@@ -172,6 +213,17 @@ def main(argv=None):
         ),
     )
     args = parser.parse_args(argv)
+    input_paths = [
+        ("--input", args.input),
+        ("--eigen", args.eigen),
+        ("--occupation", args.occupation),
+        ("--geometry", args.geometry),
+        ("--orbitalidx", args.orbitalidx),
+    ]
+    if args.transfer is not None:
+        input_paths.append(("--transfer", args.transfer))
+    if args.onebodyg_uhf is not None:
+        input_paths.append(("--onebodyg-uhf", args.onebodyg_uhf))
 
     toml_param = load_input_toml(args.input)
     cell_shape = list(toml_param["CellShape"])
@@ -216,6 +268,19 @@ def main(argv=None):
     # size (partner rows are computed on the folded BZ). CellShape is
     # preserved separately for the unfold path (spec §3.3).
     L = L_folded_arr
+
+    # v3.7 §8: the SOC + APBC + SubShape allowlist predicate depends only
+    # on (theta, sub_shape, cell_shape, is_soc_mode), all already known
+    # from input.toml at this point, so it runs here as a genuine
+    # pre-dispatch gate -- before eigen.npz is loaded -- rather than
+    # after. See the historical v3.2 -> v3.6 evolution notes further
+    # below (kept in place for context) for why this reject exists.
+    from tools._uhfk_to_mvmc.allowlist_predicate import (
+        is_supported_triple, REJECT_MESSAGE,
+    )
+    if not is_supported_triple(theta, sub_shape, cell_shape, is_soc_mode):
+        print(REJECT_MESSAGE, file=sys.stderr)
+        return 2
 
     eigen = np.load(args.eigen, allow_pickle=False)
     eigen_twist = (
@@ -267,22 +332,13 @@ def main(argv=None):
     # gauge composition + fixture. The narrower reject is deliberately
     # scoped so a nested / unusual layout produces a clean fail-fast
     # rather than a silent wrong-file selection downstream.
-    n_apbc_dirs = int(
-        np.sum(np.abs(theta - np.pi) < 1e-12) + np.sum(np.abs(theta + np.pi) < 1e-12)
-    )
-    if (
-        is_soc_mode
-        and n_apbc_dirs > 1
-        and any(int(s) != 1 for s in sub_shape)
-    ):
-        print(
-            "ERROR: enable_spin_orbital = true + multi-direction APBC "
-            f"(n_apbc_dirs={n_apbc_dirs}) + SubShape > [1, 1, 1] is "
-            "deferred to v3.7. Single-direction APBC + SOC + SubShape > 1 "
-            "is supported in v3.6 as of case_soc_rashba_2d_sub_apbc.",
-            file=sys.stderr,
-        )
-        return 2
+    # v3.7 §8: the above narrowed reject is replaced by an explicit
+    # allowlist of (apbc_mask, sub_shape, cell_shape) triples (v3.6's
+    # shipping shape + v3.7's shipping shape). The check itself now runs
+    # earlier -- immediately after CellShape/SubShape/BoundaryCondition
+    # parsing, before eigen.npz is loaded -- via
+    # ``tools._uhfk_to_mvmc.allowlist_predicate.is_supported_triple``.
+    # See that call above, near ``L = L_folded_arr``.
     eigenvalue = eigen["eigenvalue"]
     eigenvector = eigen["eigenvector"]
     wavevector_index = eigen["wavevector_index"]
@@ -367,6 +423,7 @@ def main(argv=None):
     elif orbitalidx_format == "general":
         # v3 General path (also serves the forced-General branch when
         # is_antiparallel_metadata is True).
+        transfer_entries = None
         # v3.1 spec §3.8: SOC path requires --transfer / --emit-trans
         # (the emitter runs after zqp_orbital_uhfk.dat is written; check
         # up-front so the caller catches missing args before any expensive
@@ -397,13 +454,105 @@ def main(argv=None):
                 file=sys.stderr,
             )
             return 2
-        # SOC path is no longer experimental (v3.2): the trans.def sign
-        # convention is empirically pinned via ComplexUHF verification at
-        # 4.4e-8% precision on case_soc_rashba_2d_nosub. An earlier
-        # attempt to derive it from H-wave's sc.py epsilon_k swap does
-        # NOT apply (uhfk.py:1143-1144 does not perform that swap). See
-        # tools/_uhfk_to_mvmc/trans_emit.py module docstring for the
-        # empirical basis.
+        output_paths = [("--output", args.output)]
+        if is_soc_mode:
+            output_paths.append(("--emit-trans", args.emit_trans))
+        if is_soc_sublattice_mode:
+            output_paths.append(
+                ("--emit-orbitalidx", args.emit_orbitalidx)
+            )
+        if args.debug_writer:
+            debug_dir = os.path.dirname(os.path.abspath(args.output)) or "."
+            output_paths.extend(
+                [
+                    (
+                        "--debug-writer F_pre_noise.npz",
+                        os.path.join(debug_dir, "F_pre_noise.npz"),
+                    ),
+                    (
+                        "--debug-writer F_post_aggregate.npz",
+                        os.path.join(debug_dir, "F_post_aggregate.npz"),
+                    ),
+                ]
+            )
+        general_input_paths = list(input_paths)
+        if is_soc_sublattice_mode and args.check_density:
+            general_input_paths.append(
+                (
+                    "green.npz derived from --eigen",
+                    os.path.join(os.path.dirname(args.eigen), "green.npz"),
+                )
+            )
+        try:
+            _preflight_output_collisions(
+                output_paths, general_input_paths,
+            )
+        except OutputPathCollisionError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
+
+        # Validate every SOC trans.def prerequisite before any producer can
+        # write or overwrite orbital-index, debug, zqp, or trans artifacts.
+        # The parsed entries are retained so emission uses exactly the values
+        # that passed Hermiticity and v3.1 scope validation.
+        if is_soc_mode:
+            for label, path in output_paths:
+                if os.path.isdir(path):
+                    print(
+                        f"ERROR: {label} target {path!r} is an "
+                        "existing directory; must be a file path.",
+                        file=sys.stderr,
+                    )
+                    return 2
+                parent = os.path.dirname(os.path.abspath(path)) or "."
+                if not os.path.isdir(parent):
+                    print(
+                        f"ERROR: {label} parent directory "
+                        f"{parent!r} does not exist.",
+                        file=sys.stderr,
+                    )
+                    return 2
+                if not os.access(parent, os.W_OK):
+                    print(
+                        f"ERROR: {label} parent directory "
+                        f"{parent!r} is not writable.",
+                        file=sys.stderr,
+                    )
+                    return 2
+            from tools._uhfk_to_mvmc.trans_emit import (
+                parse_hwave_transfer,
+                validate_trans_def_entries,
+                TransEmitError,
+            )
+            from tools._uhfk_to_mvmc.transfer_hermiticity import (
+                validate_transfer_entries_hermiticity,
+                TransferHermiticityError,
+            )
+            try:
+                transfer_entries = parse_hwave_transfer(args.transfer)
+                if not transfer_entries:
+                    raise TransferHermiticityError(
+                        f"{args.transfer}: no transfer entries; bridge "
+                        "output requires at least one transfer term"
+                    )
+                validate_transfer_entries_hermiticity(
+                    transfer_entries,
+                    source=args.transfer,
+                )
+                validate_trans_def_entries(transfer_entries, cell_shape)
+            except TransEmitError as e:
+                print(f"ERROR (trans_emit): {e}", file=sys.stderr)
+                return 2
+            except TransferHermiticityError as e:
+                print(
+                    f"ERROR (transfer_hermiticity): {e}",
+                    file=sys.stderr,
+                )
+                return 2
+        # SOC path is no longer experimental (v3.2). trans_emit applies the
+        # negative-Bloch mapping by swapping spin endpoints and emitting
+        # -conj(v), with the boundary wrap phase composed afterward. See its
+        # module docstring for the derivation and verification scope.
         _, site_R_int, norb = load_geometry_uhf(args.geometry)
         if norb != 1:
             print(
@@ -641,42 +790,6 @@ def main(argv=None):
         # guards the two os.replace calls are best-effort atomic; a
         # residual filesystem-level failure (e.g. mid-syscall power loss)
         # can still split the pair but has no in-process recovery path.
-        if is_soc_mode:
-            out_real = os.path.realpath(args.output)
-            trans_real = os.path.realpath(args.emit_trans)
-            if out_real == trans_real:
-                print(
-                    f"ERROR: --output and --emit-trans resolve to the "
-                    f"same path ({out_real}); they must be distinct.",
-                    file=sys.stderr,
-                )
-                return 2
-            for label, path in (
-                ("output", args.output),
-                ("emit-trans", args.emit_trans),
-            ):
-                if os.path.isdir(path):
-                    print(
-                        f"ERROR: --{label} target {path!r} is an "
-                        "existing directory; must be a file path.",
-                        file=sys.stderr,
-                    )
-                    return 2
-                parent = os.path.dirname(os.path.abspath(path)) or "."
-                if not os.path.isdir(parent):
-                    print(
-                        f"ERROR: --{label} parent directory "
-                        f"{parent!r} does not exist.",
-                        file=sys.stderr,
-                    )
-                    return 2
-                if not os.access(parent, os.W_OK):
-                    print(
-                        f"ERROR: --{label} parent directory "
-                        f"{parent!r} is not writable.",
-                        file=sys.stderr,
-                    )
-                    return 2
         out_path = os.path.abspath(args.output)
         out_dir = os.path.dirname(out_path) or "."
         os.makedirs(out_dir, exist_ok=True)
@@ -715,11 +828,13 @@ def main(argv=None):
                 # v3.2: boundary_theta is threaded so APBC rows acquire
                 # the wrap-phase sign flip at boundary crossings.
                 from tools._uhfk_to_mvmc.trans_emit import (
-                    emit_trans_def, TransEmitError,
+                    emit_trans_def_from_entries,
                 )
                 try:
-                    emit_trans_def(
-                        args.transfer, cell_shape, trans_tmp_path,
+                    emit_trans_def_from_entries(
+                        transfer_entries,
+                        cell_shape,
+                        trans_tmp_path,
                         boundary_theta=boundary_theta_tuple,
                     )
                 except TransEmitError as e:
@@ -752,6 +867,14 @@ def main(argv=None):
             "'OrbitalGeneral 1' in stan.in).",
             file=sys.stderr,
         )
+        return 2
+
+    try:
+        _preflight_output_collisions(
+            [("--output", args.output)], input_paths,
+        )
+    except OutputPathCollisionError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
         return 2
 
     _, site_R_int, norb = load_geometry_uhf(args.geometry)

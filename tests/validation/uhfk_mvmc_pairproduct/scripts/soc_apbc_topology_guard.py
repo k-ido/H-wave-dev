@@ -1,20 +1,27 @@
-"""SOC + APBC + SubShape topology + mutation guard for v3.6 G4 gate.
+"""SOC + APBC + SubShape topology + mutation guard for v3.6/v3.7 G4 gate.
 
 Spec §4.3 (topology composite element) + §6.2 (G4 wiring) + §5.3b
-(PASS record metadata) + plan Task 2g (semantic upgrade).
+(PASS record metadata) + plan Task 2g (semantic upgrade) + v3.7 §4b
+(per-direction mutation matrix, plan Task 1d).
 
-Semantic contract (Phase 2g):
+Semantic contract (Phase 2g, extended by v3.7 Task 1d):
 
   1. Load ``composite_element.json`` via ``--composite-manifest``.
   2. Load CURRENT-run ``${WORK_DIR}/hwave/green.npz`` (NEVER trust
      manifest values alone).
   3. Assert the manifest's ``(i_c, s_c, j_c, t_c)`` element exists on
      the current run with ``abs(G_current) >= 0.8 * G_c_abs``.
-  4. Assert ``s_c != t_c``, ``sub_offset_x(i_c) != sub_offset_x(j_c)``,
+  4. Assert ``s_c != t_c``, ``sub_offset_d(i_c) != sub_offset_d(j_c)``
+     for every active APBC direction ``d`` (``theta_d != 0``, per v3.7
+     spec §4 addendum; v3.6 fixtures only ever have ``d = x`` active,
+     which is exactly the original ``sub_offset_x`` check), and
      ``abs(G_current) >= 1e-3``.
-  5. Run all 10 mutations (M-gauge-1..5 + M-ship-1..5) on the CURRENT
-     run at the composite element; assert each ``delta_M >= T_M`` per
-     the manifest's ``T_M_per_mutation``.
+  5. Run all mutations on the CURRENT run at the composite element;
+     assert each ``delta_M >= T_M`` per the manifest's
+     ``T_M_per_mutation``. The manifest schema is auto-detected (see
+     ``_iter_mutation_ids``): v3.6's 10-entry whole-vector mutators
+     (``M-gauge-1..5`` + ``M-ship-1..5``) or v3.7's 30-entry
+     per-direction mutators (``M-gauge-1-x`` .. ``M-ship-5-z``).
   6. On success emit the anchored PASS record per §5.3b. On any
      failure exit code 2 + empty stdout.
 """
@@ -32,6 +39,193 @@ import numpy as np
 G4_MODE = "g4"
 G4_ARTIFACT_SOURCE = "hwave+bridge+composite-manifest"
 G4_HELPER = "soc_apbc_topology_guard"
+
+
+# v3.6 schema: whole-vector mutation ids (10 entries). Each mutator
+# below is applied to the FULL theta/L/dr vector at once.
+_V36_MUTATION_IDS = tuple(
+    f"M-gauge-{n}" for n in range(1, 6)
+) + tuple(
+    f"M-ship-{n}" for n in range(1, 6)
+)
+
+# v3.7 schema: per-direction mutation ids (30 entries; spec §4b). The
+# 10 mutation kinds are split into x/y/z variants that mutate only the
+# named axis component, leaving the other two axes baseline. M-4 has
+# intentionally different schema-specific semantics: the v3.6
+# whole-vector id flips sub_offset. In v3.7, M-gauge-4 omits sub_offset
+# on its named axis, while M-ship-4 halves that contribution so it is
+# distinct from M-ship-5, which omits it. See the mutator branches below.
+_V37_MUTATION_IDS = tuple(
+    f"M-gauge-{n}-{d}"
+    for n in range(1, 6) for d in ("x", "y", "z")
+) + tuple(
+    f"M-ship-{n}-{d}"
+    for n in range(1, 6) for d in ("x", "y", "z")
+)
+
+
+def _iter_mutation_ids(manifest):
+    """Return the mutation-id tuple appropriate for the manifest's
+    ``T_M_per_mutation`` schema. Requires an exact-key match against
+    v3.7 (30 entries) or v3.6 (10 entries); else raises since the
+    manifest matches neither known schema."""
+    t_m = manifest.get("T_M_per_mutation")
+    if not isinstance(t_m, dict):
+        raise ValueError(
+            f"manifest 'T_M_per_mutation' must be a dict; got "
+            f"{type(t_m).__name__}"
+        )
+    keys = set(t_m.keys())
+    v37 = set(_V37_MUTATION_IDS)
+    v36 = set(_V36_MUTATION_IDS)
+    if keys == v37:
+        return _V37_MUTATION_IDS
+    if keys == v36:
+        return _V36_MUTATION_IDS
+    # Fall through: hybrid or partial schema.
+    if keys < v37 and keys > v36:
+        raise ValueError(
+            f"manifest T_M_per_mutation looks partially upgraded "
+            f"from v3.6 to v3.7 ({len(keys)} keys, expected 10 or 30). "
+            f"Missing v3.7 keys: {sorted(v37 - keys)}. "
+            f"Extra: {sorted(keys - v37)}."
+        )
+    raise ValueError(
+        f"manifest T_M_per_mutation matches neither v3.6 (10 keys) nor "
+        f"v3.7 (30 keys) schema; got {len(keys)} keys: {sorted(keys)}"
+    )
+
+
+def _split_mutator_id(mutator):
+    """Split a mutator id into ``(base_id, axis)``.
+
+    ``"baseline"`` and v3.6 whole-vector ids (``M-gauge-1`` ..
+    ``M-ship-5``) return ``axis=None``: the whole-vector mutation (or
+    no mutation at all) applies, exactly reproducing v3.6 behavior.
+
+    v3.7 per-direction ids (e.g. ``M-gauge-1-x``) return
+    ``base_id="M-gauge-1"`` and ``axis=0``: the mutation applies to
+    that single vector component only (spec §4b). Mutations 1/2/3/5
+    splice the v3.6 formula into an otherwise-baseline vector; M-4
+    instead changes the named-axis sub_offset coefficient because the
+    v3.6 sign flip is structurally invisible on the shipped
+    ``L_folded=2`` lattice. M-gauge-4 omits the contribution;
+    M-ship-4 halves it, keeping it distinct from M-ship-5's omission.
+    """
+    if mutator == "baseline":
+        return mutator, None
+    parts = mutator.rsplit("-", 1)
+    if len(parts) == 2 and parts[1] in ("x", "y", "z"):
+        return parts[0], "xyz".index(parts[1])
+    return mutator, None
+
+
+def _require_finite_float(value, field_name):
+    """Return ``value`` as float, rejecting non-numeric and non-finite data."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"manifest {field_name} must be numeric; got {value!r}"
+        ) from exc
+    if not np.isfinite(number):
+        raise ValueError(
+            f"manifest {field_name} must be finite; got {number!r}"
+        )
+    return number
+
+
+def _require_finite_int(value, field_name):
+    """Return an exactly integral, finite manifest scalar as ``int``."""
+    number = _require_finite_float(value, field_name)
+    if not number.is_integer():
+        raise ValueError(
+            f"manifest {field_name} must be an integer; got {number!r}"
+        )
+    return int(number)
+
+
+def _require_finite_vector(manifest, field_name, *, integral):
+    """Validate and return one finite length-three manifest vector."""
+    try:
+        vector = np.asarray(manifest[field_name], dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"manifest {field_name} must be a numeric length-3 vector"
+        ) from exc
+    if vector.shape != (3,):
+        raise ValueError(
+            f"manifest {field_name} must have shape (3,); got "
+            f"{vector.shape}"
+        )
+    if not np.all(np.isfinite(vector)):
+        raise ValueError(
+            f"manifest {field_name} must contain only finite values; "
+            f"got {vector.tolist()}"
+        )
+    if integral and not np.all(vector == np.floor(vector)):
+        raise ValueError(
+            f"manifest {field_name} must contain only integers; "
+            f"got {vector.tolist()}"
+        )
+    return vector.astype(np.int64) if integral else vector
+
+
+def _validate_manifest_numeric_policy(manifest):
+    """Validate every numeric manifest field consumed by G4.
+
+    Thresholds are derived data, not manifest-controlled policy. Recompute
+    ``max(1e-5, 0.10 * G_c_abs)`` from the manifest's finite ``G_c_abs``.
+    Every v3.6 entry and every active-axis v3.7 entry must equal that value
+    exactly; inactive-axis v3.7 entries must be exactly zero.
+    """
+    mutation_ids = _iter_mutation_ids(manifest)
+    G_c_abs = _require_finite_float(manifest["G_c_abs"], "G_c_abs")
+    theta = _require_finite_vector(
+        manifest, "theta_radians", integral=False,
+    )
+    cell_shape = _require_finite_vector(
+        manifest, "cell_shape", integral=True,
+    )
+    subshape = _require_finite_vector(
+        manifest, "sub_shape", integral=True,
+    )
+    if np.any(cell_shape <= 0) or np.any(subshape <= 0):
+        raise ValueError(
+            "manifest cell_shape and sub_shape entries must be positive"
+        )
+    for field_name in ("i_c", "s_c", "j_c", "t_c", "N_pairs"):
+        _require_finite_int(manifest[field_name], field_name)
+    if "ncond" in manifest:
+        _require_finite_int(manifest["ncond"], "ncond")
+    _require_finite_vector(manifest, "sub_offset_i", integral=True)
+    _require_finite_vector(manifest, "sub_offset_j", integral=True)
+
+    expected_active = max(1e-5, 0.10 * G_c_abs)
+    thresholds = manifest["T_M_per_mutation"]
+    for mutator_id in mutation_ids:
+        threshold = _require_finite_float(
+            thresholds[mutator_id],
+            f"threshold T_M_per_mutation[{mutator_id!r}]",
+        )
+        _, axis = _split_mutator_id(mutator_id)
+        is_active = axis is None or abs(float(theta[axis])) > 1e-12
+        expected = expected_active if is_active else 0.0
+        if threshold != expected:
+            axis_detail = "whole-vector"
+            if axis is not None:
+                axis_detail = (
+                    f"{'active' if is_active else 'inactive'} axis "
+                    f"{'xyz'[axis]}"
+                )
+            raise ValueError(
+                f"manifest threshold policy mismatch for {mutator_id} "
+                f"({axis_detail}): got {threshold!r}, expected "
+                f"{expected!r} = "
+                f"{'max(1e-5, 0.10 * G_c_abs)' if is_active else '0.0'}"
+            )
+    return mutation_ids
 
 
 def _load_manifest(path):
@@ -79,24 +273,60 @@ def _gauge_lift_element(green_sublattice, i, s, j, t, subshape, cell_shape,
     L_full = (subshape * L_folded).astype(np.float64)
 
     dr_folded = dr_folded_base.copy()
-    theta = np.asarray(boundary_theta, dtype=np.float64)
+    # NOTE: must be a defensive copy (not a view) -- np.asarray would
+    # alias the caller's persistent theta array when it is already
+    # float64, and the v3.7 per-axis branch below mutates ``theta`` in
+    # place. The caller reuses the same array across every mutator
+    # call in soc_apbc_topology_guard's loop, so an in-place mutation
+    # on an aliased view would silently corrupt subsequent mutations.
+    theta = np.array(boundary_theta, dtype=np.float64, copy=True)
     twist_L = L_full.copy()
     twist_dr = dr_full.copy()
     twist_sign = -1.0
 
-    if mutator == "M-gauge-1":
-        twist_sign = +1.0
-    elif mutator == "M-gauge-2":
-        theta = theta / (2.0 * np.pi)
-    elif mutator == "M-gauge-3":
-        twist_L = L_folded.astype(np.float64)
-    elif mutator == "M-gauge-4":
-        so_diff = so_j.astype(np.float64) - so_i.astype(np.float64)
-        dr_folded = (
-            fc_j.astype(np.float64) - fc_i.astype(np.float64) - so_diff
-        )
-    elif mutator == "M-gauge-5":
-        twist_dr = dr_folded_base
+    base_id, axis = _split_mutator_id(mutator)
+    if base_id not in (
+        "baseline", "M-gauge-1", "M-gauge-2", "M-gauge-3", "M-gauge-4",
+        "M-gauge-5",
+    ):
+        raise ValueError(f"_gauge_lift_element: unknown mutator {mutator!r}")
+
+    if axis is None:
+        # v3.6 whole-vector mutators (and "baseline"): UNCHANGED from
+        # the original v3.6 formula.
+        if base_id == "M-gauge-1":
+            twist_sign = +1.0
+        elif base_id == "M-gauge-2":
+            theta = theta / (2.0 * np.pi)
+        elif base_id == "M-gauge-3":
+            twist_L = L_folded.astype(np.float64)
+        elif base_id == "M-gauge-4":
+            so_diff = so_j.astype(np.float64) - so_i.astype(np.float64)
+            dr_folded = (
+                fc_j.astype(np.float64) - fc_i.astype(np.float64) - so_diff
+            )
+        elif base_id == "M-gauge-5":
+            twist_dr = dr_folded_base
+    else:
+        # v3.7 per-direction mutators (spec §4b): splice only component
+        # ``axis`` into an otherwise-baseline vector; the other two axes
+        # keep their baseline (unmutated) value. M-gauge-4-{x,y,z}
+        # deliberately omits sub_offset on the named axis. This differs
+        # from the v3.6 whole-vector M-gauge-4 sign flip above: those are
+        # distinct complete mutation ids with schema-frozen semantics.
+        if base_id == "M-gauge-1":
+            theta[axis] = -theta[axis]
+        elif base_id == "M-gauge-2":
+            theta[axis] = theta[axis] / (2.0 * np.pi)
+        elif base_id == "M-gauge-3":
+            twist_L[axis] = L_folded.astype(np.float64)[axis]
+        elif base_id == "M-gauge-4":
+            dr_folded[axis] = (
+                fc_j.astype(np.float64)[axis]
+                - fc_i.astype(np.float64)[axis]
+            )
+        elif base_id == "M-gauge-5":
+            twist_dr[axis] = dr_folded_base[axis]
 
     phase_twist = np.exp(twist_sign * 1j * np.dot(theta, twist_dr / twist_L))
     accum = 0.0j
@@ -162,45 +392,100 @@ def _build_A_ship_mutated(mutator, eigen, occ, site_positions, cell_shape,
             so[0] + subshape[0] * (so[1] + subshape[1] * so[2])
         )
 
-    if mutator == "M-ship-1":
-        phys_arg = np.einsum(
-            "d,id->i", theta / L_phys, site_positions.astype(np.float64),
+    base_id, axis = _split_mutator_id(mutator)
+    if base_id not in (
+        "baseline", "M-ship-1", "M-ship-2", "M-ship-3", "M-ship-4",
+        "M-ship-5",
+    ):
+        raise ValueError(
+            f"_build_A_ship_mutated: unknown mutator {mutator!r}"
         )
-        phys_dn = np.exp(+1j * phys_arg)  # sign flipped
-    elif mutator == "M-ship-2":
-        theta_wrong = theta / (2.0 * np.pi)
-        phys_arg = np.einsum(
-            "d,id->i", theta_wrong / L_phys,
-            site_positions.astype(np.float64),
-        )
-        phys_dn = np.exp(-1j * phys_arg)
-    elif mutator == "M-ship-3":
-        phys_arg = np.einsum(
-            "d,id->i", theta / L_folded,
-            site_positions.astype(np.float64),
-        )
-        phys_dn = np.exp(-1j * phys_arg)
+
+    if axis is None:
+        # v3.6 whole-vector mutators (and baseline / M-ship-4 /
+        # M-ship-5 which reuse the baseline phys_dn): UNCHANGED.
+        if base_id == "M-ship-1":
+            phys_arg = np.einsum(
+                "d,id->i", theta / L_phys,
+                site_positions.astype(np.float64),
+            )
+            phys_dn = np.exp(+1j * phys_arg)  # sign flipped
+        elif base_id == "M-ship-2":
+            theta_wrong = theta / (2.0 * np.pi)
+            phys_arg = np.einsum(
+                "d,id->i", theta_wrong / L_phys,
+                site_positions.astype(np.float64),
+            )
+            phys_dn = np.exp(-1j * phys_arg)
+        elif base_id == "M-ship-3":
+            phys_arg = np.einsum(
+                "d,id->i", theta / L_folded,
+                site_positions.astype(np.float64),
+            )
+            phys_dn = np.exp(-1j * phys_arg)
+        else:
+            phys_arg = np.einsum(
+                "d,id->i", theta / L_phys,
+                site_positions.astype(np.float64),
+            )
+            phys_dn = np.exp(-1j * phys_arg)
     else:
+        # v3.7 per-direction mutators (spec §4b): apply the identical
+        # v3.6 formula restricted to component ``axis``; the other
+        # two axes use the baseline theta/L_phys value. M-ship-4/-5
+        # leave phys_dn at its baseline value (they only touch
+        # kf_dot_r below), matching the v3.6 else-branch.
+        theta_v37 = theta.copy()
+        L_phys_v37 = L_phys.copy()
+        if base_id == "M-ship-1":
+            theta_v37[axis] = -theta_v37[axis]
+        elif base_id == "M-ship-2":
+            theta_v37[axis] = theta_v37[axis] / (2.0 * np.pi)
+        elif base_id == "M-ship-3":
+            L_phys_v37[axis] = L_folded[axis]
         phys_arg = np.einsum(
-            "d,id->i", theta / L_phys, site_positions.astype(np.float64),
+            "d,id->i", theta_v37 / L_phys_v37,
+            site_positions.astype(np.float64),
         )
         phys_dn = np.exp(-1j * phys_arg)
 
     k_folded_all = 2.0 * np.pi * wvi.astype(np.float64) / L_folded
-    if mutator == "M-ship-4":
-        kf_dot_r = np.einsum(
-            "kd,id->ki", k_folded_all,
-            (folded_cell - sub_offset).astype(np.float64),
-        )
-    elif mutator == "M-ship-5":
-        kf_dot_r = np.einsum(
-            "kd,id->ki", k_folded_all, folded_cell.astype(np.float64),
-        )
+    if axis is None:
+        # v3.6 whole-vector mutators (and baseline / M-ship-1/2/3
+        # which reuse the baseline kf_dot_r): UNCHANGED.
+        if base_id == "M-ship-4":
+            kf_dot_r = np.einsum(
+                "kd,id->ki", k_folded_all,
+                (folded_cell - sub_offset).astype(np.float64),
+            )
+        elif base_id == "M-ship-5":
+            kf_dot_r = np.einsum(
+                "kd,id->ki", k_folded_all, folded_cell.astype(np.float64),
+            )
+        else:
+            kf_dot_r = np.einsum(
+                "kd,id->ki", k_folded_all,
+                (folded_cell + sub_offset).astype(np.float64),
+            )
     else:
-        kf_dot_r = np.einsum(
-            "kd,id->ki", k_folded_all,
-            (folded_cell + sub_offset).astype(np.float64),
-        )
+        # v3.7 per-direction mutators (spec §4b): the other two axes
+        # keep the baseline (folded_cell + sub_offset) value.
+        # M-ship-4-{x,y,z} deliberately halves sub_offset on the named
+        # axis, while M-ship-5 omits it. Coefficients 1 (baseline), 1/2
+        # (M-4), and 0 (M-5) are distinct by construction. This differs
+        # from the v3.6 whole-vector M-ship-4 sign flip above: those are
+        # distinct complete mutation ids with schema-frozen semantics.
+        # M-ship-1/-2/-3 leave kf_dot_r at its baseline value because
+        # they only touch phys_dn above.
+        pos_v37 = (folded_cell + sub_offset).astype(np.float64)
+        if base_id == "M-ship-4":
+            pos_v37[:, axis] = (
+                folded_cell[:, axis].astype(np.float64)
+                + 0.5 * sub_offset[:, axis].astype(np.float64)
+            )
+        elif base_id == "M-ship-5":
+            pos_v37[:, axis] = folded_cell[:, axis].astype(np.float64)
+        kf_dot_r = np.einsum("kd,id->ki", k_folded_all, pos_v37)
 
     plane_wave = (
         np.exp(-1j * kf_dot_r) * inv_sqrt * phys_dn[np.newaxis, :]
@@ -255,11 +540,14 @@ def soc_apbc_topology_guard(workspace, composite_manifest_path):
     entry point can convert to exit code 2 + empty stdout per §5.3b."""
     _resolve_workspace(workspace)
     manifest = _load_manifest(composite_manifest_path)
-    i_c = int(manifest["i_c"])
-    s_c = int(manifest["s_c"])
-    j_c = int(manifest["j_c"])
-    t_c = int(manifest["t_c"])
-    G_c_abs_manifest = float(manifest["G_c_abs"])
+    mutation_ids = _validate_manifest_numeric_policy(manifest)
+    i_c = _require_finite_int(manifest["i_c"], "i_c")
+    s_c = _require_finite_int(manifest["s_c"], "s_c")
+    j_c = _require_finite_int(manifest["j_c"], "j_c")
+    t_c = _require_finite_int(manifest["t_c"], "t_c")
+    G_c_abs_manifest = _require_finite_float(
+        manifest["G_c_abs"], "G_c_abs",
+    )
     T_M_manifest = manifest["T_M_per_mutation"]
 
     # Cross-spin invariant (from manifest — defensively re-checked).
@@ -268,19 +556,48 @@ def soc_apbc_topology_guard(workspace, composite_manifest_path):
             f"composite manifest requires cross-spin; got s_c=t_c={s_c}"
         )
 
-    cell_shape = np.asarray(manifest["cell_shape"], dtype=np.int64)
-    subshape = np.asarray(manifest["sub_shape"], dtype=np.int64)
-    theta = np.asarray(manifest["theta_radians"], dtype=np.float64)
+    cell_shape = _require_finite_vector(
+        manifest, "cell_shape", integral=True,
+    )
+    subshape = _require_finite_vector(
+        manifest, "sub_shape", integral=True,
+    )
+    theta = _require_finite_vector(
+        manifest, "theta_radians", integral=False,
+    )
     Nsite = int(np.prod(cell_shape))
 
-    # sub_offset_x differs (from manifest — defensively re-checked).
-    so_i_x = int(manifest["sub_offset_i"][0])
-    so_j_x = int(manifest["sub_offset_j"][0])
-    if so_i_x == so_j_x:
-        raise ValueError(
-            f"composite manifest requires sub_offset_x differs; "
-            f"got so_i_x=so_j_x={so_i_x}"
-        )
+    # sub_offset differs along every ACTIVE APBC direction (from
+    # manifest — defensively re-checked). v3.6 spec §4.3 condition 2
+    # was phrased as "sub_offset_x differs" only because v3.6 fixtures
+    # never had APBC on any axis but x (the spec's own rationale calls
+    # it "differs in the APBC direction" -- x and "the APBC direction"
+    # were synonymous under v3.6). v3.7 spec §4 addendum generalizes
+    # this per direction: "for each direction d, if theta_d != 0:
+    # require abs(r_j[d] - r_i[d]) > 0", which
+    # phase2_produce_manifest.py's _pick_composite_v37 selector already
+    # enforces when writing the manifest. This defensive re-check was
+    # not updated to match at the time and stayed hardcoded to axis 0
+    # (x), which silently mis-verifies any fixture whose active APBC
+    # axes exclude x (e.g. a y/z-only fixture): it would check an
+    # inactive axis instead of the real composite condition. Active
+    # axes are derived from theta directly rather than the newer
+    # active_apbc_axes manifest key so this also covers manifests
+    # written before that key existed (e.g. the v3.6 shipping fixture's
+    # committed composite_element.json).
+    so_i_vec = [int(x) for x in manifest["sub_offset_i"]]
+    so_j_vec = [int(x) for x in manifest["sub_offset_j"]]
+    for _d in range(3):
+        if abs(float(theta[_d])) <= 1e-12:
+            continue  # inactive axis: §4b policy, not gated here either.
+        if so_i_vec[_d] == so_j_vec[_d]:
+            _axis_char = "xyz"[_d]
+            raise ValueError(
+                f"composite manifest requires sub_offset_{_axis_char} "
+                f"differs (active APBC axis {_axis_char}, "
+                f"theta_{_axis_char}={float(theta[_d]):.6f}); got "
+                f"so_i_{_axis_char}=so_j_{_axis_char}={so_i_vec[_d]}"
+            )
 
     # Magnitude floor from manifest.
     if G_c_abs_manifest < 1e-3:
@@ -318,7 +635,9 @@ def soc_apbc_topology_guard(workspace, composite_manifest_path):
         site_positions=site_positions, boundary_theta=theta,
         mutator="baseline",
     )
-    G_current_abs = float(abs(G_current))
+    G_current_abs = _require_finite_float(
+        abs(G_current), "current-workspace G_current_abs",
+    )
     magnitude_ratio = G_current_abs / max(G_c_abs_manifest, 1e-16)
     if G_current_abs < 0.8 * G_c_abs_manifest:
         raise ValueError(
@@ -332,16 +651,21 @@ def soc_apbc_topology_guard(workspace, composite_manifest_path):
     # M-gauge mutations run at element level on the current-run
     # green_sublattice.
     max_shortfall = 0.0
-    for m_gauge in ("M-gauge-1", "M-gauge-2", "M-gauge-3", "M-gauge-4",
-                    "M-gauge-5"):
+    for m_gauge in (m for m in mutation_ids if m.startswith("M-gauge-")):
         G_mut = _gauge_lift_element(
             green_sublattice, i_c, s_c, j_c, t_c,
             subshape=subshape, cell_shape=cell_shape,
             site_positions=site_positions, boundary_theta=theta,
             mutator=m_gauge,
         )
-        delta = float(abs(G_mut - G_current))
-        T = float(T_M_manifest[m_gauge])
+        delta = _require_finite_float(
+            abs(G_mut - G_current),
+            f"current-workspace delta[{m_gauge!r}]",
+        )
+        T = _require_finite_float(
+            T_M_manifest[m_gauge],
+            f"T_M_per_mutation[{m_gauge!r}]",
+        )
         if delta < T:
             raise ValueError(
                 f"{m_gauge}: delta = {delta:.3e} < T_M = {T:.3e} "
@@ -370,7 +694,10 @@ def soc_apbc_topology_guard(workspace, composite_manifest_path):
             "under workspace's hwave/ or output/ directory; cannot run "
             "M-ship mutations."
         )
-    ncond = int(manifest.get("ncond", 2 * int(manifest["N_pairs"])))
+    n_pairs = _require_finite_int(manifest["N_pairs"], "N_pairs")
+    ncond = _require_finite_int(
+        manifest.get("ncond", 2 * n_pairs), "ncond",
+    )
     eigen = np.load(eigen_path)
     occ = np.load(occ_path)
     A_base = _build_A_ship_mutated(
@@ -414,7 +741,10 @@ def soc_apbc_topology_guard(workspace, composite_manifest_path):
         pair_list=pair_list,
         is_soc_mode=True,
     )
-    shadow_drift = float(np.max(np.abs(A_base - A_ship_canonical)))
+    shadow_drift = _require_finite_float(
+        np.max(np.abs(A_base - A_ship_canonical)),
+        "current-workspace shadow_drift",
+    )
     if shadow_drift > 1e-10:
         raise ValueError(
             f"G4 shadow-copy baseline drifted from shipping "
@@ -425,8 +755,7 @@ def soc_apbc_topology_guard(workspace, composite_manifest_path):
             "extract a shared kernel."
         )
     G_ship_base = np.conj(A_base) @ A_base.T
-    for m_ship in ("M-ship-1", "M-ship-2", "M-ship-3", "M-ship-4",
-                   "M-ship-5"):
+    for m_ship in (m for m in mutation_ids if m.startswith("M-ship-")):
         A_m = _build_A_ship_mutated(
             m_ship, eigen, occ, site_positions, cell_shape, subshape,
             ncond, theta,
@@ -434,10 +763,14 @@ def soc_apbc_topology_guard(workspace, composite_manifest_path):
         G_ship_m = np.conj(A_m) @ A_m.T
         all_i = i_c + s_c * Nsite
         all_j = j_c + t_c * Nsite
-        delta = float(abs(
-            G_ship_m[all_i, all_j] - G_ship_base[all_i, all_j]
-        ))
-        T = float(T_M_manifest[m_ship])
+        delta = _require_finite_float(
+            abs(G_ship_m[all_i, all_j] - G_ship_base[all_i, all_j]),
+            f"current-workspace delta[{m_ship!r}]",
+        )
+        T = _require_finite_float(
+            T_M_manifest[m_ship],
+            f"T_M_per_mutation[{m_ship!r}]",
+        )
         if delta < T:
             raise ValueError(
                 f"{m_ship}: delta = {delta:.3e} < T_M = {T:.3e} "
@@ -453,9 +786,12 @@ def soc_apbc_topology_guard(workspace, composite_manifest_path):
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description=(
-            "v3.6 G4 topology + mutation guard (spec §4.3, §5.3b, §6.2). "
-            "Semantic guard verifies the pinned composite element on the "
-            "current-run workspace and runs the 10-mutation matrix."
+            "v3.6/v3.7 G4 topology + mutation guard (spec §4.3, §5.3b, "
+            "§6.2, v3.7 §4b). Semantic guard verifies the pinned "
+            "composite element on the current-run workspace and runs "
+            "the manifest's mutation matrix (10 v3.6 whole-vector "
+            "mutations, or 30 v3.7 per-direction mutations; schema "
+            "auto-detected from the manifest)."
         )
     )
     parser.add_argument("--workspace", required=True)

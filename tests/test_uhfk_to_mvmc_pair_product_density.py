@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -17,6 +18,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 from tools._uhfk_to_mvmc.pair_product_density import (
     pair_product_density_from_F,
 )
+
+_DATA_DIR = Path(__file__).parent / "data"
 
 
 def _hand_2site_F_and_G():
@@ -290,4 +293,97 @@ def test_pair_product_density_from_F_matches_v3_5_case_soc_sub_zeronoise():
         "v3.5 case_soc_rashba_2d_sub zero-noise snapshot; the skew-SVD "
         "projector on emitted F no longer matches the shipping-A "
         "density under SOC + SubShape > [1, 1, 1]."
+    )
+
+
+# ---------------------------------------------------------------------
+# Phase 3d (v3.7): zero-noise F pin parametrized over the 4 v3.7
+# multi-direction APBC fixtures (spec §5.4 + §11.1).
+# ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("fixture_name,expected_theta,expected_ncond", [
+    ("xy",  (np.pi, np.pi, 0.0), 20),
+    ("xz",  (np.pi, 0.0, np.pi), 20),
+    ("yz",  (0.0, np.pi, np.pi), 24),
+    ("xyz", (np.pi, np.pi, np.pi), 12),
+])
+def test_pair_product_density_from_F_matches_v37_case_soc_sub_zeronoise(
+    fixture_name, expected_theta, expected_ncond,
+):
+    """Phase 3d (v3.7 spec §5.4 + §11.1) parametrized over the 4 v3.7
+    shipping fixtures under CellShape=[4,4,4]/SubShape=[2,2,2]. For each
+    fixture, on the zero-noise (``--epsilon-noise 0``) emitted F, the
+    projector helper must reproduce ``conj(A_ship) @ A_ship.T`` at 1e-10
+    max_abs_delta with ``rank_tol = 1e-10``.
+
+    The v3.5 test above pins the single-direction PBC case on
+    case_soc_rashba_2d_sub. This v3.7 test extends the pin to
+    multi-direction APBC: xy (AP-AP-P), xz (AP-P-AP), yz (P-AP-AP), xyz
+    (AP-AP-AP). Any regression in build_fij_general -> parse_emitted_F ->
+    pair_product_density_from_F that scrambles the projector
+    orientation, drops a sign, or mis-computes the antisymmetrization
+    under multi-direction APBC will trip this at machine-scale.
+    """
+    from tools._uhfk_to_mvmc.general_fij_builder import (
+        build_slater_orbitals, build_pair_list, compute_canonical_reps,
+    )
+    from tools._uhfk_to_mvmc.occupation_step import step_occupation
+    from tools._uhfk_to_mvmc.partner_index import find_partner_rows
+
+    prefix = f"v37_case_soc_rashba_3d_sub_apbc_{fixture_name}"
+    F = np.load(
+        _DATA_DIR / f"{prefix}_bridge_zeronoise_F_pre_noise.npz",
+    )["F"]
+    eigen = np.load(_DATA_DIR / f"{prefix}_eigen.npz")
+    occ = np.load(_DATA_DIR / f"{prefix}_occupation.npz")
+
+    cell_shape = np.array([4, 4, 4], dtype=np.int64)
+    subshape = np.array([2, 2, 2], dtype=np.int64)
+    site_positions = np.array(
+        [[x, y, z] for z in range(4) for y in range(4) for x in range(4)],
+        dtype=np.int64,
+    )
+    theta = np.array(expected_theta, dtype=np.float64)
+
+    stepped, _ = step_occupation(
+        occ["occupation"], eigen["eigenvalue"], occ["column_spin"],
+        occ["column_mu_group"], float(occ["T"]),
+        ncond_per_group=[expected_ncond], is_soc_mode=True,
+    )
+    partner_rows, _ = find_partner_rows(
+        eigen["wavevector_index"], theta, cell_shape // subshape,
+    )
+    canonical, _ = compute_canonical_reps(
+        partner_rows, eigen["wavevector_index"],
+    )
+    pair_list = build_pair_list(
+        stepped, occ["column_spin"], canonical, partner_rows,
+        is_soc_mode=True,
+    )
+    A_ship = build_slater_orbitals(
+        wavevector_index=eigen["wavevector_index"],
+        eigenvector=eigen["eigenvector"],
+        column_spin=occ["column_spin"],
+        site_positions=site_positions,
+        cell_shape=cell_shape,
+        subshape=subshape,
+        theta=theta,
+        pair_list=pair_list,
+        is_soc_mode=True,
+    )
+    G_direct = np.conj(A_ship) @ A_ship.T
+
+    N_pairs = A_ship.shape[1] // 2
+    G_from_F = pair_product_density_from_F(
+        F, N_pairs=N_pairs, rank_tol=1e-10,
+    )
+
+    max_diff = float(np.max(np.abs(G_from_F - G_direct)))
+    print(f"[{fixture_name}] max_abs_delta={max_diff:.3e}")
+    assert max_diff < 1e-10, (
+        f"[{fixture_name}] |G_from_F - G_direct|_max = {max_diff:.3e} > "
+        "1e-10 on the v3.7 zero-noise snapshot; the skew-SVD projector "
+        "on emitted F no longer matches the shipping-A density under "
+        "multi-direction APBC."
     )

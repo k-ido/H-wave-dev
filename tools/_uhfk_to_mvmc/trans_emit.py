@@ -3,47 +3,61 @@
 Reads H-wave's Wannier90-like ``Transfer.dat`` (SOI-packed ``iWan/jWan``
 indices ``2 * a_phys + spin + 1``) and emits mVMC's real-space
 ``trans.def`` with ``(i, s, j, t)`` rows for the full physical lattice,
-preserving Rashba ``s != t`` off-diagonal spin entries that
-``vmcdry.out``'s ``FermionHubbardGC`` generator drops silently.
+including the spin-off-diagonal entries that ``vmcdry.out``'s
+``FermionHubbardGC`` generator drops silently.
 
-Behaviour in one line: for each Transfer.dat entry we emit
-``s == t: -val_hwave`` and ``s != t: +val_hwave`` (see
-``DEFAULT_SIGN_DIAG`` / ``DEFAULT_SIGN_OFFDIAG``).
+General complex-SOC mapping
+---------------------------
+ComplexUHF constructs its bare Hamiltonian as ``K = -trans``. In H-wave's
+negative-Bloch physical basis, a parsed entry ``(R, s, t, v)`` maps at target
+displacement ``+R`` as
 
-Sign convention (empirically pinned)
-------------------------------------
-The mixed convention ``(sign_diag = -1, sign_offdiag = +1)`` is
-empirically pinned against ComplexUHF on
-``case_soc_rashba_2d_nosub`` (SubShape = [1, 1, 1] + SOC): ComplexUHF
-started from a random Green function converges on the emitted
-``trans.def`` to H-wave's ``<H>`` at 4.4e-8% precision, i.e. the sign
-convention is correct to machine round-off in the H-Hamiltonian sense
-for that fixture. Any residual delta on the mVMC side (currently
-~0.20% at NVMCSample=10000) is VMC statistical noise, not a sign bug.
+``K[i, t; i+R, s] = conj(v)`` and
+``trans[i, t; i+R, s] = -conj(v)``.
 
-An earlier version of this docstring claimed the sign convention was
-derivable from ``src/hwave/sc.py:250-255`` (an ``epsilon_k[orb2, orb1]``
-swap). That swap is real in ``sc.py`` (a separate solver), but
-``uhfk.py:1143-1144`` does NOT perform the same swap — it stores
-``tab_r[(*irvec, *orbvec)] = v`` directly, no index reversal. So the
-"derived from H-wave's internal swap" story does not apply to the
-UHFk path this bridge consumes. The sign convention that ships here
-is the one that empirically produces the ComplexUHF match on the
-non-sublattice SOC fixture; the derivation is deferred until an
-independent audit of the full UHFk Fourier + folded-orbital
-convention chain nails down which composition of signs is at play.
+Thus the site endpoints remain ``i -> i+R``, while the spin endpoints are
+swapped and the coefficient is conjugated and negated. On a real
+spin-diagonal entry the spin swap is a no-op and the rule reduces to the
+previous ``trans = -v`` behaviour.
+
+The v3.6 x/y Rashba fixtures did not expose the former off-diagonal ``+v``
+rule because their paired spin matrices satisfy
+``v[t,s] = -conj(v[s,t])`` at fixed ``R``. For those matrices, swapping the
+spin endpoints and emitting ``-conj(v)`` produces the same emitted matrix as
+the old rule.
+
+Compatibility with v3.6 is **matrix equivalence, not byte identity**. On the
+v3.6 shipping fixture ``case_soc_rashba_2d_sub_apbc`` the assembled matrix is
+identical to the old rule's (max element difference exactly 0.0, same key
+set), and the v3.6 seven-gate E2E passes unchanged. The emitted *text*
+differs on 368 of 389 lines: off-diagonal rows carry swapped spin labels in
+columns 2 and 4 (the partner row supplies the transposed entry, so the sum is
+unchanged), and some spin-diagonal rows print ``0.000000000000000`` where the
+old rule printed ``-0.000000000000000``. Any consumer that checksums or diffs
+``trans.def`` as text will therefore observe a change; any consumer that
+parses it into a Hamiltonian will not.
+
+Numerical reconstruction from all 128 saved v3.7 H-wave eigenpairs gives the
+following comparison against H-wave's reconstructed bare ``K``:
+
+- Former rule: maximum absolute delta ``6.0e-1``; 256 entries above
+  ``1e-10``.
+- Endpoint-swap plus conjugation rule: maximum absolute delta
+  ``1.1377010444899192e-12``; 0 entries above ``1e-10``.
 
 Verification scope
 ------------------
 - ``case_soc_rashba_2d_nosub`` (SubShape [1, 1, 1] + SOC): the emitted
-  ``trans.def`` matches ComplexUHF's SCF at 4.4e-8%. Verified.
+  ``trans.def`` matches ComplexUHF's SCF at 4.4e-8%. The general rule is
+  matrix-equivalent to the former rule for this x/y Rashba fixture. Verified.
 - ``case_soc_rashba_2d_nosub_apbc`` (SubShape [1, 1, 1] + SOC + APBC):
-  end-to-end match at VMC precision. Verified.
+  end-to-end match at VMC precision. The APBC phase is real and the x/y
+  Rashba matrix is likewise unchanged by the general mapping. Verified.
 - ``case_soc_rashba_2d_sub`` (SubShape [2, 2, 1] + SOC): the emitted
-  ``trans.def`` STILL matches ComplexUHF at ~0.15% (ComplexUHF from
+  ``trans.def`` matches ComplexUHF at ~0.15% (ComplexUHF from
   random init converges to E=-25.14 vs H-wave -25.10 on the same
-  trans.def), so the Hamiltonian coefficients emitted by this module
-  are correct for that fixture too. The reason the E2E energy compare
+  trans.def). The general rule emits the same x/y Rashba matrix for this
+  fixture. The reason the E2E energy compare
   is skipped for this case is a separate bug on the
   ``build_slater_orbitals`` (WF construction) path under SOC +
   SubShape > [1, 1, 1] — the emitted ``zqp_orbital_uhfk.dat`` encodes
@@ -59,15 +73,6 @@ from __future__ import annotations
 import numpy as np
 
 from hwave.solver._apbc_phase import inverse_gauge_phase
-
-# Sign multipliers applied per emitted trans.def row. Empirically pinned:
-# ComplexUHF SCF on the emitted trans.def matches H-wave's <H> to
-# 4.4e-8% on case_soc_rashba_2d_nosub (SubShape [1, 1, 1] + SOC) and to
-# ~0.15% on case_soc_rashba_2d_sub (SubShape [2, 2, 1] + SOC) at
-# random-init SCF from the emitted Hamiltonian. See the module docstring
-# for verification scope and the aborted "derived from sc.py swap" story.
-DEFAULT_SIGN_DIAG = -1.0
-DEFAULT_SIGN_OFFDIAG = +1.0
 
 
 class TransEmitError(ValueError):
@@ -239,7 +244,6 @@ def parse_hwave_transfer(path):
 
 def emit_trans_def(
     transfer_path, cell_shape, out_path,
-    sign_diag=DEFAULT_SIGN_DIAG, sign_offdiag=DEFAULT_SIGN_OFFDIAG,
     boundary_theta=None,
 ):
     """Emit mVMC ``trans.def`` from H-wave ``Transfer.dat``.
@@ -248,12 +252,14 @@ def emit_trans_def(
     ``Transfer.dat`` and each source site ``i_src = (ix, iy, iz)`` in
     the physical lattice, emits one row::
 
-        i_src_flat  s_src  j_tgt_flat  s_tgt  sign*re  sign*im
+        i_src_flat  s_tgt  j_tgt_flat  s_src  value.real  value.imag
 
     where ``j_tgt = ((ix + rx) mod Lx, (iy + ry) mod Ly, (iz + rz) mod Lz)``
-    (PBC unfold), ``s_src, s_tgt = unpack_soi(iWan, jWan)``, and the
-    flat index is site-major (``i = ix + Lx * (iy + Ly * iz)``, matching
-    H-wave's ``Geometry.dat`` layout).
+    (PBC unfold), ``s_src, s_tgt = unpack_soi(iWan, jWan)``, and
+    ``value = -conj(val) * P`` for the mVMC-frame boundary wrap phase ``P``.
+    The flat index is site-major (``i = ix + Lx * (iy + Ly * iz)``, matching
+    H-wave's ``Geometry.dat`` layout). The site endpoints are unchanged while
+    the spin endpoints are swapped.
 
     Parameters
     ----------
@@ -263,23 +269,6 @@ def emit_trans_def(
         Physical lattice shape ``[Lx, Ly, Lz]``.
     out_path : str
         Output ``trans.def`` path.
-    sign_diag : float, optional
-        Multiplier applied to spin-diagonal (``s_src == s_tgt``) entries.
-        Defaults to ``DEFAULT_SIGN_DIAG`` (``-1.0``); this converts
-        H-wave's Hamiltonian coefficient to mVMC's ``H = -sum trans``
-        convention and is byte-verified against vmcdry.out's
-        spin-diagonal trans.def output. Change only for controlled unit
-        tests.
-    sign_offdiag : float, optional
-        Multiplier applied to spin-off-diagonal (``s_src != s_tgt``,
-        Rashba) entries. Defaults to ``DEFAULT_SIGN_OFFDIAG`` (``+1.0``);
-        this value is **empirically pinned** via ComplexUHF verification
-        at 4.4e-8% precision on ``case_soc_rashba_2d_nosub``. An earlier
-        attempt to derive it from H-wave's ``sc.py`` ``epsilon_k[orb2,
-        orb1]`` index swap does NOT apply: ``uhfk.py`` does not perform
-        that swap (see uhfk.py:1143-1144). Re-verify against the E2E
-        harness after any mVMC or H-wave version bump. See the module
-        docstring for the empirical basis.
     boundary_theta : array-like of length 3 or None, optional
         Twist ``(theta_x, theta_y, theta_z)`` in radians. ``None``
         (default) means all-PBC and no boundary phase is applied.
@@ -300,15 +289,27 @@ def emit_trans_def(
         orbital index != 0 under v3.1's single-orbital scope).
     """
     entries = parse_hwave_transfer(transfer_path)
-    if len(cell_shape) != 3:
-        raise TransEmitError(
-            f"cell_shape must have length 3, got {list(cell_shape)}"
-        )
+    emit_trans_def_from_entries(
+        entries,
+        cell_shape,
+        out_path,
+        boundary_theta=boundary_theta,
+    )
+
+
+def emit_trans_def_from_entries(
+    entries, cell_shape, out_path,
+    boundary_theta=None,
+):
+    """Emit mVMC ``trans.def`` from already parsed Transfer.dat entries.
+
+    The entry layout and emission mapping are identical to
+    :func:`emit_trans_def`; this entry point lets callers validate the parsed
+    values and emit those same values without parsing the source twice.
+    """
+    entries = tuple(entries)
+    validate_trans_def_entries(entries, cell_shape)
     Lx, Ly, Lz = (int(c) for c in cell_shape)
-    if Lx <= 0 or Ly <= 0 or Lz <= 0:
-        raise TransEmitError(
-            f"cell_shape components must be positive: {[Lx, Ly, Lz]}"
-        )
 
     # v3.2 spec §3.8 (SOC + APBC): compose per-row wrap phase for
     # boundary-crossing bonds. ``inverse_gauge_phase(r_j_wrapped,
@@ -317,8 +318,7 @@ def emit_trans_def(
     # equals ``(-1)^wraps_d`` in each AP direction (theta_d = pi and
     # ``r_j_unwrapped - r_j_wrapped`` a multiple of L_d in that
     # direction, with the wrap count as the multiplier). Non-wrapping
-    # bonds land on ``exp(0) = 1`` and are unchanged. The formula
-    # generalizes to arbitrary twist without special-casing APBC.
+    # bonds land on ``exp(0) = 1`` and are unchanged.
     if boundary_theta is not None and np.any(
         np.abs(np.asarray(boundary_theta, dtype=np.float64)) > 1e-12
     ):
@@ -335,16 +335,8 @@ def emit_trans_def(
 
     rows = []
     for rx, ry, rz, iWan, jWan, val in entries:
-        a_src, s_src = _unpack_soi(iWan)
-        a_tgt, s_tgt = _unpack_soi(jWan)
-        # v3.1 spec §1 scope: single physical orbital per site.
-        if a_src != 0 or a_tgt != 0:
-            raise TransEmitError(
-                f"trans_emit assumes norb_orig == 1 (v3.1); got "
-                f"iWan={iWan} -> a_src={a_src}, jWan={jWan} -> "
-                f"a_tgt={a_tgt}"
-            )
-        sign = sign_diag if s_src == s_tgt else sign_offdiag
+        _, s_src = _unpack_soi(iWan)
+        _, s_tgt = _unpack_soi(jWan)
         for iz in range(Lz):
             for iy in range(Ly):
                 for ix in range(Lx):
@@ -353,7 +345,13 @@ def emit_trans_def(
                     jy = (iy + ry) % Ly
                     jz = (iz + rz) % Lz
                     j_site = site_index(jx, jy, jz)
-                    v_val = val
+                    # Conjugate the H-wave coefficient first, then multiply
+                    # by the unconjugated mVMC-frame wrap phase P:
+                    # value = -conj(val) * P. Every shipped fixture has
+                    # theta in {0, pi}, so P is real (+/-1) and conj(P) == P;
+                    # those fixtures cannot distinguish this ordering from
+                    # -conj(val * P). No fixture verifies a non-real twist.
+                    v_val = -np.conjugate(val)
                     if apply_gauge:
                         r_j_wrapped = np.array(
                             [jx, jy, jz], dtype=np.float64
@@ -365,9 +363,11 @@ def emit_trans_def(
                             r_j_wrapped, r_j_unwrapped, theta_arr, L_arr
                         )
                         v_val = v_val * wrap_phase
-                    v = sign * v_val
                     rows.append(
-                        (i_site, s_src, j_site, s_tgt, v.real, v.imag)
+                        (
+                            i_site, s_tgt, j_site, s_src,
+                            v_val.real, v_val.imag,
+                        )
                     )
 
     # Mirror vmcdry.out's trans.def header layout so mVMC's parser
@@ -383,4 +383,28 @@ def emit_trans_def(
                 "{:5d}{:6d}{:6d}{:6d}{:26.15f}{:26.15f}\n".format(
                     i, s, j, t, re, im
                 )
+            )
+
+
+def validate_trans_def_entries(entries, cell_shape):
+    """Validate constraints required to emit parsed Transfer.dat entries."""
+    if len(cell_shape) != 3:
+        raise TransEmitError(
+            f"cell_shape must have length 3, got {list(cell_shape)}"
+        )
+    Lx, Ly, Lz = (int(c) for c in cell_shape)
+    if Lx <= 0 or Ly <= 0 or Lz <= 0:
+        raise TransEmitError(
+            f"cell_shape components must be positive: {[Lx, Ly, Lz]}"
+        )
+
+    for _rx, _ry, _rz, iWan, jWan, _val in entries:
+        a_src, _s_src = _unpack_soi(iWan)
+        a_tgt, _s_tgt = _unpack_soi(jWan)
+        # v3.1 spec §1 scope: single physical orbital per site.
+        if a_src != 0 or a_tgt != 0:
+            raise TransEmitError(
+                f"trans_emit assumes norb_orig == 1 (v3.1); got "
+                f"iWan={iWan} -> a_src={a_src}, jWan={jWan} -> "
+                f"a_tgt={a_tgt}"
             )

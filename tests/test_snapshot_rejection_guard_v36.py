@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -39,11 +40,40 @@ _GUARD_PATH = str(
     _REPO_ROOT / "tests" / "validation" / "uhfk_mvmc_pairproduct"
     / "scripts" / "soc_apbc_topology_guard.py"
 )
-_REAL_CASE_DIR = str(
+_REAL_CASE_SOURCE = (
     _REPO_ROOT / "tests" / "validation" / "uhfk_mvmc_pairproduct"
     / "case_soc_rashba_2d_sub_apbc"
 )
+_REAL_CASE_DIR = str(_REAL_CASE_SOURCE)
 _REAL_MANIFEST = os.path.join(_REAL_CASE_DIR, "composite_element.json")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _real_case_workspace(tmp_path_factory):
+    """Build the positive G4 workspace from tracked v3.6 snapshots."""
+    global _REAL_CASE_DIR, _REAL_MANIFEST
+
+    workspace = (
+        tmp_path_factory.mktemp("snapshot-guard-real-case")
+        / "case_soc_rashba_2d_sub_apbc"
+    )
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    shutil.copy2(_REAL_CASE_SOURCE / "composite_element.json", workspace)
+    for name in ("green", "eigen", "occupation"):
+        shutil.copy2(
+            _TESTS_DATA_ROOT
+            / f"v36_case_soc_rashba_2d_sub_apbc_{name}.npz",
+            output / f"{name}.npz",
+        )
+
+    original_case_dir = _REAL_CASE_DIR
+    original_manifest = _REAL_MANIFEST
+    _REAL_CASE_DIR = str(workspace)
+    _REAL_MANIFEST = str(workspace / "composite_element.json")
+    yield
+    _REAL_CASE_DIR = original_case_dir
+    _REAL_MANIFEST = original_manifest
 
 
 def _run(cmd):
@@ -63,7 +93,9 @@ def _run_compare(workspace, mode="g0-writer-check"):
     ])
 
 
-def _run_guard(workspace, manifest=_REAL_MANIFEST):
+def _run_guard(workspace, manifest=None):
+    if manifest is None:
+        manifest = _REAL_MANIFEST
     return _run([
         sys.executable, _GUARD_PATH,
         "--workspace", str(workspace),

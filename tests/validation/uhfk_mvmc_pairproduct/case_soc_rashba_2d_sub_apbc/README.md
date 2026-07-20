@@ -15,7 +15,7 @@ Task 2).
 - Rashba SOC: `t = 1`, `alpha = 0.5`, `U = 2` (identical to v3.5 `case_soc_rashba_2d_sub`)
 - Total physical sites: 24 (spin-orbital dim 48)
 
-## Ncond gap check
+## Ncond selection
 
 Phase 2 step 2b: `soc_pilot_gap.py` with the fixture's own
 `BoundaryCondition = ["antiperiodic", "periodic", "periodic"]` (twist
@@ -27,22 +27,42 @@ PYTHONPATH=src python tests/validation/uhfk_mvmc_pairproduct/scripts/soc_pilot_g
     --ncond 4,6,8,10,12,14
 ```
 
-- `Ncond= 4`: gap = 2.333e-01 (OK)
-- `Ncond= 6`: gap = 7.389e-02 (OK; close to `>= 5e-2` boundary)
-- `Ncond= 8`: gap = 1.532e-01 (OK)  ← fixture choice for physics
-  consistency with v3.5 `case_soc_rashba_2d_sub` (same 1/6 filling on
-  24 sites).
-- `Ncond=10`: gap = 1.298e+00 (OK)
-- `Ncond=12`: gap = 1.211e-01 (OK)
-- `Ncond=14`: gap = 3.513e-01 (OK)
+Measured with `flag_fock = true` (see `input.toml`). The Fock term
+changes the converged spectrum, so this table supersedes the earlier
+Fock-off one.
+
+Both criteria are listed per candidate: the scalar HOMO-LUMO gap, and
+the `build_pair_list` partner-balance invariant `n_occ(k) ==
+n_occ(partner(k))` for every non-self canonical/partner k-row pair.
+Partner-balance is a frozen-spectrum re-slice of this fixture's own
+`Ncond=8` converged spectrum (`step_occupation` + `find_partner_rows` +
+`build_pair_list`, no SCF rerun per candidate).
+
+- `Ncond= 4`: gap = 2.321e-01 (PASS); partner-balance **PASS**
+- `Ncond= 6`: gap = 5.696e-02 (PASS); partner-balance **PASS**
+- `Ncond= 8`: gap = 1.904e-01 (PASS); partner-balance **PASS**
+- `Ncond=10`: gap = 1.245e+00 (PASS); partner-balance **PASS**
+- `Ncond=12`: gap = 1.904e-01 (PASS); partner-balance **PASS**
+- `Ncond=14`: gap = 3.167e-01 (PASS); partner-balance **PASS**
+
+All scanned candidates satisfy BOTH `gap >= 5e-2` and
+partner-balance. `Ncond = 8` stays pinned for physics consistency with
+v3.5 `case_soc_rashba_2d_sub` (the same 1/6 filling on 24 sites), so
+enabling the Fock term does not move this fixture's filling.
+
+The table is a frozen-spectrum estimate (aufbau re-fill of the pinned
+self-consistent solution), not independent SCF reruns per candidate.
+The authoritative pinned-value checks are the fresh SCF and
+`build_pair_list` result reported here.
 
 `Ncond = 8` matches v3.5's PBC fixture at the same physical filling, so
 the mVMC `<H>` delta between the PBC and APBC runs stays directly
-comparable at the same Ncond. The plan (Task 2b) allows the smallest
-gap-passing choice; `Ncond = 4` also satisfies `>= 5e-2` and is
-reserved as a fallback if the composite-element check in Phase 2 step
-2d fails to find a cross-spin sub_offset-differing element at
-`Ncond = 8`.
+comparable at the same Ncond.
+
+Pinned: `Ncond = 8` (gap = 1.904e-01 >= 5e-2, partner-balance holds).
+Fresh H-wave SCF with `flag_fock = true` confirms convergence in 362
+iterations (rest=`9.75450451085065e-15`,
+`Energy_Total=-25.390269883203256`). Measured 2026-07-19.
 
 ## Composite element manifest
 

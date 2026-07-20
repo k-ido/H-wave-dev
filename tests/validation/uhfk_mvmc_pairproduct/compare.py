@@ -211,19 +211,33 @@ def _validate_dispatch(requested_mode: str):
     return entry, resolved
 
 
-def _emit_pass(mode: str, max_abs_delta: float, tol: float):
+def _emit_pass(
+    mode: str,
+    max_abs_delta: float,
+    tol: float,
+    *,
+    g2_evidence=None,
+):
     """Print the anchored §5.3b PASS record. All metadata fields come
     from EXPECTED_MODE_DISPATCH (never MODE_DISPATCH) so a runtime table
     mutation cannot poison the emitted PASS."""
     expected = EXPECTED_MODE_DISPATCH[mode]
     helpers = "+".join(qn for _, qn in expected["helpers"])
     gate_name = _mode_to_gate_name(mode)
-    print(
+    record = (
         f"{gate_name} PASS mode={mode} "
         f"artifact_source={expected['artifact_source']} "
         f"helper={helpers} max_abs_delta={max_abs_delta:.6e} "
         f"tol={tol:.6e}"
     )
+    if g2_evidence is not None:
+        initial_delta, final_delta, contraction_ratio = g2_evidence
+        record += (
+            f" initial_delta={initial_delta:.6e} "
+            f"final_delta={final_delta:.6e} "
+            f"contraction_ratio={contraction_ratio:.6e}"
+        )
+    print(record)
 
 
 def _mode_to_gate_name(mode: str) -> str:
@@ -442,10 +456,188 @@ def _load_complexuhf_G(workspace, Ns):
     return G
 
 
+class ComplexUHFInitialParseError(RuntimeError):
+    """Raised when ComplexUHF's sparse ``initial.def`` is malformed."""
+
+
+def _load_complexuhf_initial_G(workspace, Ns):
+    """Parse ``initial.def`` into ComplexUHF's site-spin matrix order.
+
+    ComplexUHF indexes the rows as ``2*i+s``. The five-line header is
+    followed by sparse ``i s j t re im`` rows; omitted entries are zero.
+    """
+    import numpy as np
+
+    path = os.path.join(workspace, "complexuhf", "initial.def")
+    if not os.path.isfile(path):
+        raise FileNotFoundError(path)
+    with open(path) as fp:
+        header = [fp.readline() for _ in range(5)]
+        if any(line == "" for line in header):
+            raise ComplexUHFInitialParseError(
+                f"{path}: expected a five-line header"
+            )
+        count_match = re.fullmatch(r"\s*NInitial\s+(\d+)\s*", header[1])
+        if count_match is None:
+            raise ComplexUHFInitialParseError(
+                f"{path}:2: expected 'NInitial <count>'"
+            )
+        expected_rows = int(count_match.group(1))
+        G = np.zeros((2 * Ns, 2 * Ns), dtype=np.complex128)
+        seen = set()
+        for lineno, line in enumerate(fp, start=6):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            tokens = stripped.split()
+            if len(tokens) != 6:
+                raise ComplexUHFInitialParseError(
+                    f"{path}:{lineno}: expected exactly 6 tokens "
+                    f"(i s j t re im); got {len(tokens)}"
+                )
+            try:
+                i, s, j, t = (int(token) for token in tokens[:4])
+                real, imag = (float(token) for token in tokens[4:])
+            except ValueError as exc:
+                raise ComplexUHFInitialParseError(
+                    f"{path}:{lineno}: token parse error ({exc})"
+                ) from exc
+            if not (0 <= i < Ns) or not (0 <= j < Ns):
+                raise ComplexUHFInitialParseError(
+                    f"{path}:{lineno}: site index out of range "
+                    f"[0, {Ns}): i={i}, j={j}"
+                )
+            if s not in (0, 1) or t not in (0, 1):
+                raise ComplexUHFInitialParseError(
+                    f"{path}:{lineno}: spin out of range {{0, 1}}: "
+                    f"s={s}, t={t}"
+                )
+            key = (i, s, j, t)
+            if key in seen:
+                raise ComplexUHFInitialParseError(
+                    f"{path}:{lineno}: duplicate (i, s, j, t) = {key}"
+                )
+            if not (np.isfinite(real) and np.isfinite(imag)):
+                raise ComplexUHFInitialParseError(
+                    f"{path}:{lineno}: non-finite value "
+                    f"{complex(real, imag)!r}"
+                )
+            seen.add(key)
+            G[2 * i + s, 2 * j + t] = complex(real, imag)
+    if len(seen) != expected_rows:
+        raise ComplexUHFInitialParseError(
+            f"{path}: NInitial declares {expected_rows} rows; got "
+            f"{len(seen)}"
+        )
+    return G
+
+
+def _check_g2_contraction(mode, workspace, G_reference, G_final, tol):
+    """Require a G2 trajectory from clearly outside to inside ``tol``."""
+    import numpy as np
+
+    Ns = G_reference.shape[0] // 2
+    initial_site_spin = _load_complexuhf_initial_G(workspace, Ns)
+    gate_name = _mode_to_gate_name(mode)
+    finite_inputs = (
+        ("tol", np.asarray(tol)),
+        ("reference density", np.asarray(G_reference)),
+        ("final density", np.asarray(G_final)),
+        ("initial density", np.asarray(initial_site_spin)),
+    )
+    for label, values in finite_inputs:
+        if not np.all(np.isfinite(values)):
+            print(f"{gate_name}: {label} contains non-finite values", file=sys.stderr)
+            return 1
+
+    spin_block_indices = np.asarray(
+        [i + s * Ns for i in range(Ns) for s in (0, 1)],
+        dtype=np.int64,
+    )
+    reference_site_spin = G_reference[
+        np.ix_(spin_block_indices, spin_block_indices)
+    ]
+    initial_delta = float(
+        np.max(np.abs(initial_site_spin - reference_site_spin))
+    )
+    final_delta = float(np.max(np.abs(G_final - G_reference)))
+    if not (np.isfinite(initial_delta) and np.isfinite(final_delta)):
+        print(
+            f"{gate_name}: non-finite contraction delta "
+            f"(initial={initial_delta!r}, final={final_delta!r})",
+            file=sys.stderr,
+        )
+        return 1
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        contraction_ratio = float(np.divide(final_delta, initial_delta))
+    if not np.isfinite(contraction_ratio):
+        print(
+            f"{gate_name}: contraction ratio is non-finite: "
+            f"{contraction_ratio!r}",
+            file=sys.stderr,
+        )
+        return 1
+
+    minimum_initial_delta = 10.0 * tol
+    if initial_delta < minimum_initial_delta:
+        print(
+            f"{gate_name}: initial density delta = {initial_delta:.3e} "
+            f"< required 10*tol = {minimum_initial_delta:.3e}",
+            file=sys.stderr,
+        )
+        return 1
+    if final_delta >= tol:
+        print(
+            f"{gate_name}: final density delta = {final_delta:.3e} "
+            f">= tol = {tol:.3e}",
+            file=sys.stderr,
+        )
+        return 1
+    _emit_pass(
+        mode,
+        final_delta,
+        tol,
+        g2_evidence=(initial_delta, final_delta, contraction_ratio),
+    )
+    return 0
+
+
 # ---------------------------------------------------------------------
 # Mode dispatchers (real comparisons — Codex adversarial-review
 # hardening 2026-07-12: G1/G2a-*/G2b are no longer PASS-emitting stubs).
 # ---------------------------------------------------------------------
+
+
+def _validated_max_abs_delta(
+    gate_name, lhs_name, lhs, rhs_name, rhs, gtol
+):
+    """Return a finite max delta for valid threshold-comparison inputs."""
+    import numpy as np
+
+    if not (np.isfinite(gtol) and gtol > 0.0):
+        print(
+            f"{gate_name}: tolerance must be finite and positive; "
+            f"got {gtol!r}",
+            file=sys.stderr,
+        )
+        return None
+    for label, values in ((lhs_name, lhs), (rhs_name, rhs)):
+        if not np.all(np.isfinite(values)):
+            print(
+                f"{gate_name}: {label} contains non-finite values",
+                file=sys.stderr,
+            )
+            return None
+    max_abs_delta = float(np.max(np.abs(lhs - rhs)))
+    if not np.isfinite(max_abs_delta):
+        print(
+            f"{gate_name}: max absolute delta is non-finite "
+            f"({max_abs_delta!r})",
+            file=sys.stderr,
+        )
+        return None
+    return max_abs_delta
 
 
 def _dispatch_g0_writer_check(workspace: str, resolved, gtol: float) -> int:
@@ -454,7 +646,16 @@ def _dispatch_g0_writer_check(workspace: str, resolved, gtol: float) -> int:
     F_emitted = parse_emitted_F(subdir)
     import numpy as np
     F_pre = np.load(os.path.join(subdir, "F_pre_noise.npz"))["F"]
-    max_abs_delta = float(np.max(np.abs(F_emitted - F_pre)))
+    max_abs_delta = _validated_max_abs_delta(
+        "G0-writer-check",
+        "emitted pair matrix",
+        F_emitted,
+        "pre-noise pair matrix",
+        F_pre,
+        gtol,
+    )
+    if max_abs_delta is None:
+        return 1
     if max_abs_delta > gtol:
         return 1
     _emit_pass("g0-writer-check", max_abs_delta, gtol)
@@ -474,7 +675,16 @@ def _dispatch_g1(workspace: str, resolved, gtol: float) -> int:
     A_ship, _ = _build_shipping_A(workspace, cfg)
     G_ship = np.conj(A_ship) @ A_ship.T
     G_lift = _build_G_from_gauge_lift(workspace, cfg, gauge_lift)
-    max_abs_delta = float(np.max(np.abs(G_ship - G_lift)))
+    max_abs_delta = _validated_max_abs_delta(
+        "G1",
+        "shipping density",
+        G_ship,
+        "gauge-lifted density",
+        G_lift,
+        gtol,
+    )
+    if max_abs_delta is None:
+        return 1
     if max_abs_delta > gtol:
         print(
             f"G1: |G_ship - G_lift|_max = {max_abs_delta:.3e} > "
@@ -490,7 +700,6 @@ def _dispatch_g2a_emitted_F(workspace: str, resolved, gtol: float) -> int:
     """G2a-emitted-F (§5.3): pair_product_density_from_F(parse_emitted_F(
     workspace/bridge)) vs ComplexUHF one-body Green at ``gtol`` (1e-6
     default). Fails closed on missing ComplexUHF file."""
-    import numpy as np
     parse_emitted_F, pair_product_density_from_F = resolved
 
     F = parse_emitted_F(os.path.join(workspace, "bridge"))
@@ -498,16 +707,9 @@ def _dispatch_g2a_emitted_F(workspace: str, resolved, gtol: float) -> int:
     n_pairs = cfg["Ncond"] // 2
     G_bridge = pair_product_density_from_F(F, n_pairs, rank_tol=1e-6)
     G_cuhf = _load_complexuhf_G(workspace, cfg["Ns"])
-    max_abs_delta = float(np.max(np.abs(G_bridge - G_cuhf)))
-    if max_abs_delta > gtol:
-        print(
-            f"G2a-emitted-F: |G_bridge - G_complexuhf|_max = "
-            f"{max_abs_delta:.3e} > tol = {gtol:.3e}",
-            file=sys.stderr,
-        )
-        return 1
-    _emit_pass("g2a-emitted-F", max_abs_delta, gtol)
-    return 0
+    return _check_g2_contraction(
+        "g2a-emitted-F", workspace, G_bridge, G_cuhf, gtol
+    )
 
 
 def _dispatch_g2a_in_memory(workspace: str, resolved, gtol: float) -> int:
@@ -521,47 +723,58 @@ def _dispatch_g2a_in_memory(workspace: str, resolved, gtol: float) -> int:
     A_ship, _ = _build_shipping_A(workspace, cfg)
     G_ship = np.conj(A_ship) @ A_ship.T
     G_cuhf = _load_complexuhf_G(workspace, cfg["Ns"])
-    max_abs_delta = float(np.max(np.abs(G_ship - G_cuhf)))
-    if max_abs_delta > gtol:
-        print(
-            f"G2a-in-memory-A: |G_ship - G_complexuhf|_max = "
-            f"{max_abs_delta:.3e} > tol = {gtol:.3e}",
-            file=sys.stderr,
-        )
-        return 1
-    _emit_pass("g2a-in-memory", max_abs_delta, gtol)
-    return 0
+    return _check_g2_contraction(
+        "g2a-in-memory", workspace, G_ship, G_cuhf, gtol
+    )
 
 
 def _dispatch_g2b(workspace: str, resolved, gtol: float) -> int:
     """G2b (§5.3): gauge_lift-lifted green_sublattice vs ComplexUHF
     one-body Green at ``gtol`` (1e-6). Uses boundary_theta from the
     workspace's input.toml (Codex hardening: no more hardcoded PBC)."""
-    import numpy as np
     (gauge_lift,) = resolved
 
     cfg = _load_workspace_config(workspace)
     G_lift = _build_G_from_gauge_lift(workspace, cfg, gauge_lift)
     G_cuhf = _load_complexuhf_G(workspace, cfg["Ns"])
-    max_abs_delta = float(np.max(np.abs(G_lift - G_cuhf)))
-    if max_abs_delta > gtol:
-        print(
-            f"G2b: |G_lift - G_complexuhf|_max = {max_abs_delta:.3e} > "
-            f"tol = {gtol:.3e}",
-            file=sys.stderr,
-        )
-        return 1
-    _emit_pass("g2b", max_abs_delta, gtol)
-    return 0
+    return _check_g2_contraction(
+        "g2b", workspace, G_lift, G_cuhf, gtol
+    )
 
 
 def _dispatch_g3(workspace: str, resolved, tol: float) -> int:
     (energy_relative_delta,) = resolved
     # Reuse the canonical G3 resolver so the artifact source contract
     # (§5.6) is honored.
-    from tools._uhfk_to_mvmc.energy_compare import _resolve_g3_paths
+    from tools._uhfk_to_mvmc.energy_compare import (
+        EnergyCompareError,
+        _resolve_g3_paths,
+    )
     hwave_energy, mvmc_selected = _resolve_g3_paths(workspace)
-    _, _, delta_rel = energy_relative_delta(hwave_energy, mvmc_selected)
+    try:
+        e_hwave, e_mvmc, delta_rel = energy_relative_delta(
+            hwave_energy, mvmc_selected,
+        )
+    except EnergyCompareError as exc:
+        print(f"G3: {exc}", file=sys.stderr)
+        return 1
+    # Same fail-open the G2 gates had: `nan > tol` is False, so a NaN
+    # anywhere in the mVMC samples would fall straight through to a PASS
+    # and silently disable the only H-wave/mVMC energy-agreement gate.
+    import math
+
+    for label, value in (
+        ("tolerance", tol),
+        ("H-wave energy", e_hwave),
+        ("mVMC energy", e_mvmc),
+        ("relative delta", delta_rel),
+    ):
+        if not math.isfinite(value):
+            print(
+                f"G3: {label} is non-finite ({value!r})",
+                file=sys.stderr,
+            )
+            return 1
     if delta_rel > tol:
         return 1
     _emit_pass("g3", delta_rel, tol)

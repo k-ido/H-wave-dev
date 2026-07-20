@@ -31,8 +31,12 @@ patches namelist.def to reference it.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
+import re
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -179,6 +183,43 @@ def _write_initial_def(
                      f"{re: 24.16e} {im: 24.16e}\n")
 
 
+def _write_provenance(initial_path, hwave_workspace, perturb_scale):
+    """Write the canonical-JSON provenance sidecar required by §6.2."""
+    initial_path = Path(initial_path)
+    hwave_output = Path(hwave_workspace) / "output"
+
+    def sha256_file(path):
+        digest = hashlib.sha256()
+        with open(path, "rb") as fp:
+            for chunk in iter(lambda: fp.read(65536), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    energy_total = None
+    energy_path = hwave_output / "energy.dat"
+    with open(energy_path) as fp:
+        for line in fp:
+            if re.match(r"\s*Energy_Total\s*=", line):
+                energy_total = float(line.split("=", 1)[1].strip())
+                break
+    if energy_total is None:
+        raise ValueError(f"{energy_path}: Energy_Total entry missing")
+
+    payload = {
+        "sha256_initial_def": sha256_file(initial_path),
+        "sha256_hwave_green": sha256_file(hwave_output / "green.npz"),
+        "sha256_hwave_eigen": sha256_file(hwave_output / "eigen.npz"),
+        "energy_total": energy_total,
+        "perturb_scale": perturb_scale,
+    }
+    sidecar_path = initial_path.with_name("initial.def.provenance")
+    sidecar_path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return sidecar_path
+
+
 def _patch_namelist(namelist_path, initial_def_relpath):
     """Append 'Initial <path>' entry to namelist.def if not present."""
     with open(namelist_path) as fp:
@@ -222,10 +263,14 @@ def main():
         perturb_scale=args.perturb_scale,
         perturb_seed=args.perturb_seed,
     )
+    provenance_path = _write_provenance(
+        initial_path, args.hwave_workspace, args.perturb_scale,
+    )
     namelist_path = os.path.join(args.complexuhf_workspace, "namelist.def")
     _patch_namelist(namelist_path, args.initial_def)
     print(f"seed_complexuhf_from_hwave: wrote {initial_path} "
           f"(perturb_scale={args.perturb_scale})")
+    print(f"seed_complexuhf_from_hwave: wrote {provenance_path}")
     print(f"seed_complexuhf_from_hwave: patched {namelist_path}")
 
 

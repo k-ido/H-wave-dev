@@ -16,6 +16,7 @@ outputs, `output/` vs flat layout) are handled outside G3's contract.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 from statistics import mean
@@ -51,26 +52,37 @@ def _parse_hwave_energy(path: str) -> float:
 def _parse_mvmc_zvo_out(path: str) -> List[float]:
     """Return the list of per-bin ``<H>`` values from a zvo_out_*.dat file.
 
-    Format (mVMC 1.4.0): each non-comment line is
-    ``<H> <H^2> <doublon> <singleon> ...``. Column 0 is the total-energy
-    expectation for that bin. Raises FileNotFoundError if the path does
-    not exist, EnergyCompareError if no numeric rows can be parsed.
+    Format (mVMC 1.4.0): each non-comment line contains exactly six
+    numeric columns beginning with ``<H> <H^2> <doublon> <singleon>``.
+    Column 0 is the total-energy expectation for that bin. Raises
+    FileNotFoundError if the path does not exist, EnergyCompareError if
+    any row violates the schema or no numeric rows are present.
     """
     if not os.path.isfile(path):
         raise FileNotFoundError(f"mvmc zvo_out file not found: {path}")
     samples: List[float] = []
     with open(path) as fp:
-        for line in fp:
+        for lineno, line in enumerate(fp, start=1):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
             toks = line.split()
-            if not toks:
-                continue
+            if len(toks) != 6:
+                raise EnergyCompareError(
+                    f"{path}:{lineno}: expected exactly 6 columns; "
+                    f"got {len(toks)}"
+                )
             try:
-                samples.append(float(toks[0]))
-            except ValueError:
-                continue
+                values = [float(token) for token in toks]
+            except ValueError as exc:
+                raise EnergyCompareError(
+                    f"{path}:{lineno}: expected numeric columns ({exc})"
+                ) from exc
+            if not all(math.isfinite(value) for value in values):
+                raise EnergyCompareError(
+                    f"{path}:{lineno}: row contains non-finite values"
+                )
+            samples.append(values[0])
     if not samples:
         raise EnergyCompareError(f"no numeric rows parsed from {path}")
     return samples

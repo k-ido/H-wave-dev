@@ -758,6 +758,50 @@ def test_gauge_lift_apbc_negative_control_theta_zero():
 # ---------------------------------------------------------------------
 
 
+def _axis_of_mutator(mutator_id):
+    """Return the axis index for a v3.7 per-direction mutator id
+    (M-gauge-1-x -> 0, M-gauge-1-y -> 1, M-gauge-1-z -> 2) or None for
+    v3.6 whole-vector mutators / baseline.
+
+    Raises ValueError if the id looks like a per-direction mutator but
+    the axis suffix is invalid (e.g., M-gauge-1-w).
+    """
+    if not mutator_id.startswith(("M-gauge-", "M-ship-")):
+        return None  # baseline or unknown
+    parts = mutator_id.split("-")
+    # v3.6 whole-vector: "M-gauge-1" -> 3 parts
+    # v3.7 per-direction: "M-gauge-1-x" -> 4 parts
+    if len(parts) == 3:
+        return None
+    if len(parts) != 4:
+        raise ValueError(f"invalid mutator id shape: {mutator_id!r}")
+    axis_char = parts[3]
+    if axis_char not in ("x", "y", "z"):
+        raise ValueError(
+            f"invalid axis in mutator id {mutator_id!r}: "
+            f"got {axis_char!r}, expected x, y, or z"
+        )
+    return "xyz".index(axis_char)
+
+
+def test_axis_of_mutator_v36_ids_return_none():
+    assert _axis_of_mutator("baseline") is None
+    assert _axis_of_mutator("M-gauge-1") is None
+    assert _axis_of_mutator("M-ship-5") is None
+
+
+def test_axis_of_mutator_v37_ids_return_axis_index():
+    assert _axis_of_mutator("M-gauge-1-x") == 0
+    assert _axis_of_mutator("M-gauge-1-y") == 1
+    assert _axis_of_mutator("M-gauge-1-z") == 2
+    assert _axis_of_mutator("M-ship-5-z") == 2
+
+
+def test_axis_of_mutator_rejects_invalid_axis():
+    with pytest.raises(ValueError):
+        _axis_of_mutator("M-gauge-1-w")
+
+
 def _v36_gauge_lift_at_composite_mutated(
     green_sublattice, i, s, j, t, subshape, cell_shape, site_positions,
     boundary_theta, mutator,
@@ -772,8 +816,16 @@ def _v36_gauge_lift_at_composite_mutated(
       * ``M-gauge-1``  -- twist sign: exp(-i theta.dr/L) -> exp(+i theta.dr/L)
       * ``M-gauge-2``  -- twist unit: pass theta / (2*pi) as theta
       * ``M-gauge-3``  -- twist L: divide by L_folded instead of L_full
-      * ``M-gauge-4``  -- sub_offset sign in dr_folded
+      * ``M-gauge-4``  -- v3.6: sub_offset sign in dr_folded;
+                          v3.7 per-direction: omit sub_offset on that axis
       * ``M-gauge-5``  -- dr_folded in twist phase instead of dr_full
+
+    v3.7 also accepts per-direction ids (``M-gauge-{1..5}-{x,y,z}``,
+    spec §4b): the mutation is applied to only the named axis component
+    of theta / L / dr, while the other two axes keep the baseline
+    behavior. M-gauge-4 omits sub_offset on that axis because the v3.6
+    sign flip is degenerate for ``L_folded=2``. See
+    ``_axis_of_mutator``.
     """
     gs_soc = green_sublattice[:, 0, :, 0, :]
     L_folded = cell_shape // subshape
@@ -798,10 +850,32 @@ def _v36_gauge_lift_at_composite_mutated(
     aa = 2 * folded_orb_i + int(s)
     bb = 2 * folded_orb_j + int(t)
 
-    if mutator == "M-gauge-4":
-        # sub_offset(j) - sub_offset(i) -> -(sub_offset(j) - sub_offset(i))
-        dr_folded = (fc_j.astype(np.float64) + (-so_j).astype(np.float64)) \
-                    - (fc_i.astype(np.float64) + (-so_i).astype(np.float64))
+    # v3.7 per-direction mutators (M-gauge-N-{x,y,z}) restrict the base
+    # mutation N to a single axis; v3.6 whole-vector ids (axis is None)
+    # keep their original code paths below untouched.
+    axis = _axis_of_mutator(mutator)
+    base_mutator = (
+        mutator if axis is None else "-".join(mutator.split("-")[:-1])
+    )
+
+    if base_mutator == "M-gauge-4":
+        if axis is None:
+            # sub_offset(j) - sub_offset(i) -> -(sub_offset(j) - sub_offset(i))
+            dr_folded = (
+                (fc_j.astype(np.float64) + (-so_j).astype(np.float64))
+                - (fc_i.astype(np.float64) + (-so_i).astype(np.float64))
+            )
+        else:
+            # v3.7 schema: omit sub_offset on the named axis only;
+            # other axes keep the baseline (+so_i, +so_j) contribution.
+            dr_folded = (
+                (fc_j.astype(np.float64) + so_j.astype(np.float64))
+                - (fc_i.astype(np.float64) + so_i.astype(np.float64))
+            )
+            dr_folded[axis] = (
+                fc_j.astype(np.float64)[axis]
+                - fc_i.astype(np.float64)[axis]
+            )
     else:
         dr_folded = (fc_j.astype(np.float64) + so_j.astype(np.float64)) \
                     - (fc_i.astype(np.float64) + so_i.astype(np.float64))
@@ -809,20 +883,44 @@ def _v36_gauge_lift_at_composite_mutated(
     L_full = (subshape * L_folded).astype(np.float64)
 
     theta = np.asarray(boundary_theta, dtype=np.float64)
-    if mutator == "M-gauge-1":
-        phase_twist = np.exp(+1j * np.dot(theta, dr_full / L_full))
-    elif mutator == "M-gauge-2":
-        # twist_offset = theta / (2*pi) passed as theta
-        theta_wrong = theta / (2.0 * np.pi)
-        phase_twist = np.exp(-1j * np.dot(theta_wrong, dr_full / L_full))
-    elif mutator == "M-gauge-3":
-        # divide by L_folded instead of L_full
-        phase_twist = np.exp(
-            -1j * np.dot(theta, dr_full / L_folded.astype(np.float64))
-        )
-    elif mutator == "M-gauge-5":
-        # use dr_folded in twist instead of dr_full
-        phase_twist = np.exp(-1j * np.dot(theta, dr_folded / L_full))
+    if base_mutator == "M-gauge-1":
+        if axis is None:
+            phase_twist = np.exp(+1j * np.dot(theta, dr_full / L_full))
+        else:
+            # flip sign of theta on the named axis only.
+            theta_mut = theta.copy()
+            theta_mut[axis] = -theta_mut[axis]
+            phase_twist = np.exp(-1j * np.dot(theta_mut, dr_full / L_full))
+    elif base_mutator == "M-gauge-2":
+        if axis is None:
+            # twist_offset = theta / (2*pi) passed as theta
+            theta_wrong = theta / (2.0 * np.pi)
+            phase_twist = np.exp(-1j * np.dot(theta_wrong, dr_full / L_full))
+        else:
+            # theta / (2*pi) on the named axis only.
+            theta_wrong = theta.copy()
+            theta_wrong[axis] = theta_wrong[axis] / (2.0 * np.pi)
+            phase_twist = np.exp(-1j * np.dot(theta_wrong, dr_full / L_full))
+    elif base_mutator == "M-gauge-3":
+        if axis is None:
+            # divide by L_folded instead of L_full
+            phase_twist = np.exp(
+                -1j * np.dot(theta, dr_full / L_folded.astype(np.float64))
+            )
+        else:
+            # divide by L_folded on the named axis only.
+            L_denom = L_full.copy()
+            L_denom[axis] = L_folded.astype(np.float64)[axis]
+            phase_twist = np.exp(-1j * np.dot(theta, dr_full / L_denom))
+    elif base_mutator == "M-gauge-5":
+        if axis is None:
+            # use dr_folded in twist instead of dr_full
+            phase_twist = np.exp(-1j * np.dot(theta, dr_folded / L_full))
+        else:
+            # use dr_folded on the named axis only.
+            dr_denom = dr_full.copy()
+            dr_denom[axis] = dr_folded[axis]
+            phase_twist = np.exp(-1j * np.dot(theta, dr_denom / L_full))
     else:
         phase_twist = np.exp(-1j * np.dot(theta, dr_full / L_full))
 
@@ -850,8 +948,16 @@ def _v36_build_shipping_A_mutated(mutator):
       * ``M-ship-1``  -- phys_dn sign: exp(-i theta.r/L) -> exp(+i theta.r/L)
       * ``M-ship-2``  -- phys_dn unit: pass theta/(2*pi) as theta
       * ``M-ship-3``  -- phys_dn L: divide by L_folded instead of L_phys
-      * ``M-ship-4``  -- kf_dot_r offset sign: folded_cell - sub_offset
+      * ``M-ship-4``  -- v3.6: kf_dot_r offset sign;
+                         v3.7 per-direction: halve offset on that axis
       * ``M-ship-5``  -- kf_dot_r drops sub_offset entirely
+
+    v3.7 also accepts per-direction ids (``M-ship-{1..5}-{x,y,z}``,
+    spec §4b): the mutation is applied to only the named axis component
+    of theta / L / sub_offset, while the other two axes keep baseline
+    behavior. M-ship-4 halves sub_offset on that axis because the v3.6
+    sign flip is degenerate for ``L_folded=2``; M-ship-5 omits it. See
+    ``_axis_of_mutator``.
     """
     from tools._uhfk_to_mvmc.general_fij_builder import (
         build_pair_list, compute_canonical_reps,
@@ -909,25 +1015,64 @@ def _v36_build_shipping_A_mutated(mutator):
             so[0] + subshape[0] * (so[1] + subshape[1] * so[2])
         )
 
+    # v3.7 per-direction mutators (M-ship-N-{x,y,z}) restrict the base
+    # mutation N to a single axis; v3.6 whole-vector ids (axis is None)
+    # keep their original code paths below untouched.
+    axis = _axis_of_mutator(mutator)
+    base_mutator = (
+        mutator if axis is None else "-".join(mutator.split("-")[:-1])
+    )
+
     # phys_dn variants for M-ship-1..3.
-    if mutator == "M-ship-1":
-        phys_arg = np.einsum(
-            "d,id->i", theta_apbc / L_phys, site_positions.astype(np.float64),
-        )
-        phys_dn = np.exp(+1j * phys_arg)  # sign flipped
-    elif mutator == "M-ship-2":
-        theta_wrong = theta_apbc / (2.0 * np.pi)
-        phys_arg = np.einsum(
-            "d,id->i", theta_wrong / L_phys,
-            site_positions.astype(np.float64),
-        )
-        phys_dn = np.exp(-1j * phys_arg)
-    elif mutator == "M-ship-3":
-        phys_arg = np.einsum(
-            "d,id->i", theta_apbc / L_folded,
-            site_positions.astype(np.float64),
-        )
-        phys_dn = np.exp(-1j * phys_arg)
+    if base_mutator == "M-ship-1":
+        if axis is None:
+            phys_arg = np.einsum(
+                "d,id->i", theta_apbc / L_phys,
+                site_positions.astype(np.float64),
+            )
+            phys_dn = np.exp(+1j * phys_arg)  # sign flipped
+        else:
+            # flip sign of theta on the named axis only.
+            theta_mut = theta_apbc.copy()
+            theta_mut[axis] = -theta_mut[axis]
+            phys_arg = np.einsum(
+                "d,id->i", theta_mut / L_phys,
+                site_positions.astype(np.float64),
+            )
+            phys_dn = np.exp(-1j * phys_arg)
+    elif base_mutator == "M-ship-2":
+        if axis is None:
+            theta_wrong = theta_apbc / (2.0 * np.pi)
+            phys_arg = np.einsum(
+                "d,id->i", theta_wrong / L_phys,
+                site_positions.astype(np.float64),
+            )
+            phys_dn = np.exp(-1j * phys_arg)
+        else:
+            # theta / (2*pi) on the named axis only.
+            theta_wrong = theta_apbc.copy()
+            theta_wrong[axis] = theta_wrong[axis] / (2.0 * np.pi)
+            phys_arg = np.einsum(
+                "d,id->i", theta_wrong / L_phys,
+                site_positions.astype(np.float64),
+            )
+            phys_dn = np.exp(-1j * phys_arg)
+    elif base_mutator == "M-ship-3":
+        if axis is None:
+            phys_arg = np.einsum(
+                "d,id->i", theta_apbc / L_folded,
+                site_positions.astype(np.float64),
+            )
+            phys_dn = np.exp(-1j * phys_arg)
+        else:
+            # divide by L_folded on the named axis only.
+            L_denom = L_phys.copy()
+            L_denom[axis] = L_folded[axis]
+            phys_arg = np.einsum(
+                "d,id->i", theta_apbc / L_denom,
+                site_positions.astype(np.float64),
+            )
+            phys_dn = np.exp(-1j * phys_arg)
     else:
         phys_arg = np.einsum(
             "d,id->i", theta_apbc / L_phys, site_positions.astype(np.float64),
@@ -938,15 +1083,31 @@ def _v36_build_shipping_A_mutated(mutator):
     k_folded_all = (
         2.0 * np.pi * wavevector_index.astype(np.float64) / L_folded
     )
-    if mutator == "M-ship-4":
-        kf_dot_r = np.einsum(
-            "kd,id->ki", k_folded_all,
-            (folded_cell - sub_offset_per_site).astype(np.float64),
-        )
-    elif mutator == "M-ship-5":
-        kf_dot_r = np.einsum(
-            "kd,id->ki", k_folded_all, folded_cell.astype(np.float64),
-        )
+    if base_mutator == "M-ship-4":
+        if axis is None:
+            kf_dot_r = np.einsum(
+                "kd,id->ki", k_folded_all,
+                (folded_cell - sub_offset_per_site).astype(np.float64),
+            )
+        else:
+            # v3.7 schema: halve sub_offset on the named axis only;
+            # other axes keep the baseline contribution.
+            pos_arg = (folded_cell + sub_offset_per_site).astype(np.float64)
+            pos_arg[:, axis] = (
+                folded_cell[:, axis].astype(np.float64)
+                + 0.5 * sub_offset_per_site[:, axis].astype(np.float64)
+            )
+            kf_dot_r = np.einsum("kd,id->ki", k_folded_all, pos_arg)
+    elif base_mutator == "M-ship-5":
+        if axis is None:
+            kf_dot_r = np.einsum(
+                "kd,id->ki", k_folded_all, folded_cell.astype(np.float64),
+            )
+        else:
+            # drop sub_offset on the named axis only.
+            pos_arg = (folded_cell + sub_offset_per_site).astype(np.float64)
+            pos_arg[:, axis] = folded_cell[:, axis].astype(np.float64)
+            kf_dot_r = np.einsum("kd,id->ki", k_folded_all, pos_arg)
     else:
         kf_dot_r = np.einsum(
             "kd,id->ki", k_folded_all,
@@ -1056,4 +1217,562 @@ def test_gauge_lift_apbc_mutation_regression_matrix(mutator):
         "Phase 2 producer with a stronger candidate, or investigate why "
         "the mutation is orthogonal to the composite's dr_folded / "
         "sub_offset / twist coordinates."
+    )
+
+
+# ---------------------------------------------------------------------
+# Phase 3b (v3.7): A2 positive pin parametrized over the 4 v3.7
+# multi-direction APBC fixtures (spec §3, §11.1).
+# ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("fixture_name,expected_theta,expected_ncond", [
+    ("xy",  (np.pi, np.pi, 0.0), 20),
+    ("xz",  (np.pi, 0.0, np.pi), 20),
+    ("yz",  (0.0, np.pi, np.pi), 24),
+    ("xyz", (np.pi, np.pi, np.pi), 12),
+])
+def test_gauge_lift_apbc_matches_shipping_A_on_real_run_v37(
+    fixture_name, expected_theta, expected_ncond,
+):
+    """Phase 3b (v3.7 spec §3 + §11.1) parametrized over the 4 v3.7
+    shipping fixtures under CellShape=[4,4,4]/SubShape=[2,2,2]. For
+    each fixture, verify the shipping A density matches the gauge-
+    lifted green_sublattice at max_abs_delta < 1e-10 under the
+    fixture's own boundary_theta -- the G1 in-process self-consistency
+    gate (v3.6 spec §2.5 Assumption A2 pin; formula unchanged per v3.7
+    spec §3) extended to multi-direction APBC.
+
+    The v3.6 test above pins the single-direction (AP-P-P) APBC case
+    at 1e-10. This v3.7 test extends the pin to multi-direction APBC:
+    xy (AP-AP-P), xz (AP-P-AP), yz (P-AP-AP), xyz (AP-AP-AP).
+    """
+    from tools._uhfk_to_mvmc.density_check import gauge_lift
+    from tools._uhfk_to_mvmc.general_fij_builder import (
+        build_slater_orbitals, build_pair_list, compute_canonical_reps,
+    )
+    from tools._uhfk_to_mvmc.occupation_step import step_occupation
+    from tools._uhfk_to_mvmc.partner_index import find_partner_rows
+
+    prefix = f"v37_case_soc_rashba_3d_sub_apbc_{fixture_name}"
+    gp = np.load(str(_DATA_DIR / f"{prefix}_green.npz"))
+    eigen = np.load(str(_DATA_DIR / f"{prefix}_eigen.npz"))
+    occ = np.load(str(_DATA_DIR / f"{prefix}_occupation.npz"))
+
+    green_sublattice = gp["green_sublattice"]
+    cell_shape = np.array([4, 4, 4], dtype=np.int64)
+    subshape = np.array([2, 2, 2], dtype=np.int64)
+    Ns = int(np.prod(cell_shape))  # 64
+    site_positions = np.array(
+        [[x, y, z] for z in range(4) for y in range(4) for x in range(4)],
+        dtype=np.int64,
+    )
+    theta = np.array(expected_theta, dtype=np.float64)
+
+    # Build shipping A.
+    stepped, _ = step_occupation(
+        occ["occupation"], eigen["eigenvalue"], occ["column_spin"],
+        occ["column_mu_group"], float(occ["T"]),
+        ncond_per_group=[expected_ncond], is_soc_mode=True,
+    )
+    partner_rows, _ = find_partner_rows(
+        eigen["wavevector_index"], theta, cell_shape // subshape,
+    )
+    canonical, _ = compute_canonical_reps(
+        partner_rows, eigen["wavevector_index"],
+    )
+    pair_list = build_pair_list(
+        stepped, occ["column_spin"], canonical, partner_rows,
+        is_soc_mode=True,
+    )
+    A_ship = build_slater_orbitals(
+        wavevector_index=eigen["wavevector_index"],
+        eigenvector=eigen["eigenvector"],
+        column_spin=occ["column_spin"],
+        site_positions=site_positions,
+        cell_shape=cell_shape,
+        subshape=subshape,
+        theta=theta,
+        pair_list=pair_list,
+        is_soc_mode=True,
+    )
+    G_ship = np.conj(A_ship) @ A_ship.T
+
+    # Lift green_sublattice for every (i, s, j, t) element.
+    folded_cell_of = lambda r_phys: r_phys // subshape
+    G_lift = np.zeros((2 * Ns, 2 * Ns), dtype=np.complex128)
+    for site_i in range(Ns):
+        for spin_i in (0, 1):
+            for site_j in range(Ns):
+                for spin_j in (0, 1):
+                    all_i = site_i + spin_i * Ns
+                    all_j = site_j + spin_j * Ns
+                    G_lift[all_i, all_j] = gauge_lift(
+                        green_sublattice, site_i, spin_i, site_j, spin_j,
+                        subshape=subshape, cell_shape=cell_shape,
+                        site_positions=site_positions,
+                        folded_cell_of=folded_cell_of,
+                        boundary_theta=theta,
+                    )
+
+    max_diff = float(np.max(np.abs(G_ship - G_lift)))
+    cross_spin_block = G_lift[:Ns, Ns:]
+    cross_max = float(np.max(np.abs(cross_spin_block)))
+    print(
+        f"[{fixture_name}] max_abs_delta={max_diff:.3e} "
+        f"cross_spin_max={cross_max:.3e}"
+    )
+
+    assert max_diff < 1e-10, (
+        f"[{fixture_name}] |G_ship - G_lift|_max = {max_diff:.3e} > 1e-10 "
+        "under multi-direction APBC; gauge_lift + build_slater_orbitals "
+        "do not agree on this v3.7 fixture."
+    )
+
+    # Cross-spin sanity: fixture MUST exercise Rashba SOC off-diagonals.
+    assert cross_max > 0.01, (
+        f"[{fixture_name}] |G_lift[s!=t]|_max = {cross_max:.3e} <= 0.01; "
+        "the v3.7 fixture does not exercise Rashba SOC off-diagonals as "
+        "expected."
+    )
+
+
+# ---------------------------------------------------------------------
+# Phase 3c (v3.7): negative control parametrized over the 4 v3.7
+# multi-direction APBC fixtures (spec §4 + §11.1).
+# ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("fixture_name,expected_theta,expected_ncond", [
+    ("xy",  (np.pi, np.pi, 0.0), 20),
+    ("xz",  (np.pi, 0.0, np.pi), 20),
+    ("yz",  (0.0, np.pi, np.pi), 24),
+    ("xyz", (np.pi, np.pi, np.pi), 12),
+])
+def test_gauge_lift_apbc_negative_control_theta_zero_v37(
+    fixture_name, expected_theta, expected_ncond,
+):
+    """Phase 3c (v3.7 §4 + §11.1): parametrized negative control over
+    the 4 v3.7 shipping fixtures. At each fixture's composite element
+    (i_c, s_c, j_c, t_c) from composite_element.json:
+
+    - G_A_c    = shipping A density under theta = expected_theta
+    - G_neg_c  = gauge_lift with boundary_theta = (0, 0, 0) at same composite
+
+    Assert |G_neg_c - G_A_c| >= 0.3 * |G_A_c|. Proves the multi-
+    direction twist gauge is functionally load-bearing on this fixture;
+    if the gauge were vestigial or already carried elsewhere, dropping
+    it would leave G_neg_c ~ G_A_c at machine precision.
+    """
+    import json
+    from tools._uhfk_to_mvmc.density_check import gauge_lift
+    from tools._uhfk_to_mvmc.general_fij_builder import (
+        build_slater_orbitals, build_pair_list, compute_canonical_reps,
+    )
+    from tools._uhfk_to_mvmc.occupation_step import step_occupation
+    from tools._uhfk_to_mvmc.partner_index import find_partner_rows
+
+    prefix = f"v37_case_soc_rashba_3d_sub_apbc_{fixture_name}"
+
+    with open(str(_DATA_DIR / f"{prefix}_composite_element.json")) as fp:
+        manifest = json.load(fp)
+    i_c = int(manifest["i_c"])
+    s_c = int(manifest["s_c"])
+    j_c = int(manifest["j_c"])
+    t_c = int(manifest["t_c"])
+
+    gp = np.load(str(_DATA_DIR / f"{prefix}_green.npz"))
+    eigen = np.load(str(_DATA_DIR / f"{prefix}_eigen.npz"))
+    occ = np.load(str(_DATA_DIR / f"{prefix}_occupation.npz"))
+
+    green_sublattice = gp["green_sublattice"]
+    cell_shape = np.array([4, 4, 4], dtype=np.int64)
+    subshape = np.array([2, 2, 2], dtype=np.int64)
+    Ns = int(np.prod(cell_shape))  # 64
+    site_positions = np.array(
+        [[x, y, z] for z in range(4) for y in range(4) for x in range(4)],
+        dtype=np.int64,
+    )
+    theta = np.array(expected_theta, dtype=np.float64)
+
+    # Build shipping A + G_A_c at composite.
+    stepped, _ = step_occupation(
+        occ["occupation"], eigen["eigenvalue"], occ["column_spin"],
+        occ["column_mu_group"], float(occ["T"]),
+        ncond_per_group=[expected_ncond], is_soc_mode=True,
+    )
+    partner_rows, _ = find_partner_rows(
+        eigen["wavevector_index"], theta, cell_shape // subshape,
+    )
+    canonical, _ = compute_canonical_reps(
+        partner_rows, eigen["wavevector_index"],
+    )
+    pair_list = build_pair_list(
+        stepped, occ["column_spin"], canonical, partner_rows,
+        is_soc_mode=True,
+    )
+    A_ship = build_slater_orbitals(
+        wavevector_index=eigen["wavevector_index"],
+        eigenvector=eigen["eigenvector"],
+        column_spin=occ["column_spin"],
+        site_positions=site_positions,
+        cell_shape=cell_shape,
+        subshape=subshape,
+        theta=theta,
+        pair_list=pair_list,
+        is_soc_mode=True,
+    )
+    G_direct = np.conj(A_ship) @ A_ship.T
+    all_i = i_c + s_c * Ns
+    all_j = j_c + t_c * Ns
+    G_A_c = G_direct[all_i, all_j]
+
+    folded_cell_of = lambda r_phys: r_phys // subshape
+    G_neg_c = gauge_lift(
+        green_sublattice, i_c, s_c, j_c, t_c,
+        subshape=subshape, cell_shape=cell_shape,
+        site_positions=site_positions,
+        folded_cell_of=folded_cell_of,
+        boundary_theta=(0.0, 0.0, 0.0),  # twist gauge intentionally dropped
+    )
+
+    G_A_c_abs = abs(G_A_c)
+    assert G_A_c_abs > 1e-3, (
+        f"[{fixture_name}] G_A_c magnitude {G_A_c_abs:.3e} <= 1e-3 at "
+        f"composite (i={i_c}, s={s_c}, j={j_c}, t={t_c}); the composite "
+        "fell off the manifest; check the snapshot / manifest pairing."
+    )
+    delta = abs(G_neg_c - G_A_c)
+    threshold = 0.3 * G_A_c_abs
+    assert delta >= threshold, (
+        f"[{fixture_name}] |G_neg_c - G_A_c| = {delta:.3e} < "
+        f"0.3 * |G_A_c| = {threshold:.3e}; dropping the twist gauge did "
+        "NOT perturb the composite element by the expected Rashba-scale "
+        "amount. Either the twist gauge is vestigial in gauge_lift, or "
+        "the composite was accidentally chosen with a coordinate "
+        "invariant to APBC."
+    )
+
+
+# ---------------------------------------------------------------------
+# Phase 4a (v3.7): per-direction mutation matrix parametrized over the
+# 4 v3.7 multi-direction APBC fixtures (spec §4b, §11.2). Parallel to
+# ``test_gauge_lift_apbc_mutation_regression_matrix`` above (v3.6,
+# left unchanged). Reuses the same mutation semantics but reads the
+# composite element AND the per-mutation floor T_M from each v3.7
+# fixture's own composite_element.json (Phase 2 producer output)
+# instead of recomputing T_M = max(1e-5, 0.10 * |G_c|) locally: the
+# producer's floor preserves the one documented relaxation on top of
+# that base formula: an inactive axis (theta_axis == 0) has T_M = 0 and
+# is handled here via pytest.skip per spec §4b. Every active-axis entry
+# has a positive threshold; the producer rejects a structurally
+# degenerate active-axis mutation set instead of emitting a vacuous gate.
+# ---------------------------------------------------------------------
+
+
+_V37_MUTATION_KEYS = tuple(
+    f"{base_id}-{axis_char}"
+    for base_id in (_M_GAUGE_IDS + _M_SHIP_IDS)
+    for axis_char in ("x", "y", "z")
+)
+
+
+def _v37_build_shipping_A_mutated(
+    mutator, *, eigen, occ, cell_shape, subshape, site_positions, theta,
+    ncond,
+):
+    """Parametrized sibling of ``_v36_build_shipping_A_mutated`` (spec
+    v3.7 §4b) for the 4 multi-direction APBC fixtures. Same mutation
+    semantics and the same shadow-copy-of-``build_slater_orbitals``
+    approach; ``cell_shape`` / ``subshape`` / ``site_positions`` /
+    ``theta`` / ``ncond`` and the eigen / occupation snapshot arrays
+    (already-loaded ``np.load`` objects) are parameters instead of the
+    v3.6 fixture's hardcoded constants, so this helper is reusable
+    across xy/xz/yz/xyz without touching ``_v36_build_shipping_A_
+    mutated``. See that function's docstring for the mutator list;
+    ``mutator`` accepts both v3.6 whole-vector ids and v3.7
+    per-direction ids per ``_axis_of_mutator``.
+    """
+    from tools._uhfk_to_mvmc.general_fij_builder import (
+        build_pair_list, compute_canonical_reps,
+    )
+    from tools._uhfk_to_mvmc.occupation_step import step_occupation
+    from tools._uhfk_to_mvmc.partner_index import find_partner_rows
+    from tools._uhfk_to_mvmc.sublattice_unfold import decode_physical_site
+
+    Ns_phys = int(np.prod(cell_shape))
+    theta = np.asarray(theta, dtype=np.float64)
+    L_folded = (cell_shape // subshape).astype(np.float64)
+    L_phys = cell_shape.astype(np.float64)
+
+    stepped, _ = step_occupation(
+        occ["occupation"], eigen["eigenvalue"], occ["column_spin"],
+        occ["column_mu_group"], float(occ["T"]),
+        ncond_per_group=[ncond], is_soc_mode=True,
+    )
+    partner_rows, _ = find_partner_rows(
+        eigen["wavevector_index"], theta, cell_shape // subshape,
+    )
+    canonical, _ = compute_canonical_reps(
+        partner_rows, eigen["wavevector_index"],
+    )
+    pair_list = build_pair_list(
+        stepped, occ["column_spin"], canonical, partner_rows,
+        is_soc_mode=True,
+    )
+
+    wavevector_index = eigen["wavevector_index"].astype(np.int64)
+    eigenvector = eigen["eigenvector"].astype(np.complex128)
+    nvol_folded = wavevector_index.shape[0]
+    inv_sqrt = 1.0 / np.sqrt(float(nvol_folded))
+
+    folded_cell = np.empty((Ns_phys, 3), dtype=np.int64)
+    sub_offset_per_site = np.empty((Ns_phys, 3), dtype=np.int64)
+    folded_orb_per_site = np.empty(Ns_phys, dtype=np.int64)
+    for i in range(Ns_phys):
+        fc, so = decode_physical_site(site_positions[i], subshape)
+        folded_cell[i] = fc
+        sub_offset_per_site[i] = so
+        folded_orb_per_site[i] = (
+            so[0] + subshape[0] * (so[1] + subshape[1] * so[2])
+        )
+
+    # v3.7 per-direction mutators (M-ship-N-{x,y,z}) restrict the base
+    # mutation N to a single axis; v3.6 whole-vector ids (axis is
+    # None) keep their original code paths below untouched.
+    axis = _axis_of_mutator(mutator)
+    base_mutator = (
+        mutator if axis is None else "-".join(mutator.split("-")[:-1])
+    )
+
+    # phys_dn variants for M-ship-1..3.
+    if base_mutator == "M-ship-1":
+        if axis is None:
+            phys_arg = np.einsum(
+                "d,id->i", theta / L_phys,
+                site_positions.astype(np.float64),
+            )
+            phys_dn = np.exp(+1j * phys_arg)  # sign flipped
+        else:
+            theta_mut = theta.copy()
+            theta_mut[axis] = -theta_mut[axis]
+            phys_arg = np.einsum(
+                "d,id->i", theta_mut / L_phys,
+                site_positions.astype(np.float64),
+            )
+            phys_dn = np.exp(-1j * phys_arg)
+    elif base_mutator == "M-ship-2":
+        if axis is None:
+            theta_wrong = theta / (2.0 * np.pi)
+            phys_arg = np.einsum(
+                "d,id->i", theta_wrong / L_phys,
+                site_positions.astype(np.float64),
+            )
+            phys_dn = np.exp(-1j * phys_arg)
+        else:
+            theta_wrong = theta.copy()
+            theta_wrong[axis] = theta_wrong[axis] / (2.0 * np.pi)
+            phys_arg = np.einsum(
+                "d,id->i", theta_wrong / L_phys,
+                site_positions.astype(np.float64),
+            )
+            phys_dn = np.exp(-1j * phys_arg)
+    elif base_mutator == "M-ship-3":
+        if axis is None:
+            phys_arg = np.einsum(
+                "d,id->i", theta / L_folded,
+                site_positions.astype(np.float64),
+            )
+            phys_dn = np.exp(-1j * phys_arg)
+        else:
+            L_denom = L_phys.copy()
+            L_denom[axis] = L_folded[axis]
+            phys_arg = np.einsum(
+                "d,id->i", theta / L_denom,
+                site_positions.astype(np.float64),
+            )
+            phys_dn = np.exp(-1j * phys_arg)
+    else:
+        phys_arg = np.einsum(
+            "d,id->i", theta / L_phys, site_positions.astype(np.float64),
+        )
+        phys_dn = np.exp(-1j * phys_arg)
+
+    # kf_dot_r variants for M-ship-4/5.
+    k_folded_all = (
+        2.0 * np.pi * wavevector_index.astype(np.float64) / L_folded
+    )
+    if base_mutator == "M-ship-4":
+        if axis is None:
+            kf_dot_r = np.einsum(
+                "kd,id->ki", k_folded_all,
+                (folded_cell - sub_offset_per_site).astype(np.float64),
+            )
+        else:
+            pos_arg = (
+                folded_cell + sub_offset_per_site
+            ).astype(np.float64)
+            pos_arg[:, axis] = (
+                folded_cell[:, axis].astype(np.float64)
+                + 0.5 * sub_offset_per_site[:, axis].astype(np.float64)
+            )
+            kf_dot_r = np.einsum("kd,id->ki", k_folded_all, pos_arg)
+    elif base_mutator == "M-ship-5":
+        if axis is None:
+            kf_dot_r = np.einsum(
+                "kd,id->ki", k_folded_all, folded_cell.astype(np.float64),
+            )
+        else:
+            pos_arg = (
+                folded_cell + sub_offset_per_site
+            ).astype(np.float64)
+            pos_arg[:, axis] = folded_cell[:, axis].astype(np.float64)
+            kf_dot_r = np.einsum("kd,id->ki", k_folded_all, pos_arg)
+    else:
+        kf_dot_r = np.einsum(
+            "kd,id->ki", k_folded_all,
+            (folded_cell + sub_offset_per_site).astype(np.float64),
+        )
+
+    plane_wave_soc = (
+        np.exp(-1j * kf_dot_r) * inv_sqrt * phys_dn[np.newaxis, :]
+    )
+
+    A_soc = np.zeros(
+        (2 * Ns_phys, 2 * len(pair_list)), dtype=np.complex128
+    )
+    for p, pair in enumerate(pair_list):
+        for column_idx, member in enumerate(pair):
+            k_row_member, alpha = int(member[0]), int(member[1])
+            slater_col = 2 * p + column_idx
+            plane_wave_member = plane_wave_soc[k_row_member]
+            for spin in (0, 1):
+                hwave_rows = (
+                    2 * folded_orb_per_site + spin
+                ).astype(np.int64)
+                v_vals = np.array(
+                    [
+                        eigenvector[k_row_member, int(hwave_rows[i]), alpha]
+                        for i in range(Ns_phys)
+                    ],
+                    dtype=np.complex128,
+                )
+                amp = plane_wave_member * v_vals
+                row_start = spin * Ns_phys
+                A_soc[row_start:row_start + Ns_phys, slater_col] = amp
+    return A_soc, {"Ns": Ns_phys}
+
+
+@pytest.mark.parametrize("mutation_key", _V37_MUTATION_KEYS)
+@pytest.mark.parametrize("fixture_name,expected_theta,expected_ncond", [
+    ("xy",  (np.pi, np.pi, 0.0), 20),
+    ("xz",  (np.pi, 0.0, np.pi), 20),
+    ("yz",  (0.0, np.pi, np.pi), 24),
+    ("xyz", (np.pi, np.pi, np.pi), 12),
+])
+def test_gauge_lift_apbc_mutation_regression_matrix_v37(
+    fixture_name, expected_theta, expected_ncond, mutation_key,
+):
+    """Phase 4a (v3.7 spec §4b + §11.2, extends v3.6 §4.4). Parallel to
+    ``test_gauge_lift_apbc_mutation_regression_matrix`` above (v3.6,
+    unchanged): same 30-id per-direction mutation matrix
+    (M-{gauge,ship}-{1..5}-{x,y,z}), now parametrized over the 4 v3.7
+    multi-direction APBC fixtures (xy/xz/yz/xyz on
+    CellShape=[4,4,4]/SubShape=[2,2,2]) for 4 x 30 = 120 cases.
+
+    A mutation whose axis carries no APBC twist on this fixture
+    (theta_axis == 0) is a no-op by construction (spec §4b), so the
+    case is skipped rather than asserted. Otherwise the case loads the
+    fixture's Phase 2 composite_element.json manifest, applies the
+    mutation to the shipping gauge_lift (M-gauge) or
+    build_slater_orbitals (M-ship) at the manifest's composite element
+    (i_c, s_c, j_c, t_c), and asserts the resulting delta clears the
+    manifest's own T_M_per_mutation floor for that mutation id (see
+    the module-level banner above for why T_M is read from the
+    manifest rather than recomputed).
+
+    Runs against the Phase 3 snapshot (tests/data/v37_case_soc_rashba
+    _3d_sub_apbc_{fixture}_*.npz) so the pin remains reproducible
+    without a live SCF workspace, matching the v3.6 test's design.
+    """
+    import json
+
+    axis = _axis_of_mutator(mutation_key)
+    axis_char = "xyz"[axis]
+    theta = np.array(expected_theta, dtype=np.float64)
+
+    if theta[axis] == 0.0:
+        pytest.skip(
+            f"{mutation_key}: theta_{axis_char} = 0 on fixture "
+            f"{fixture_name!r}; this axis carries no APBC twist, so "
+            "the mutation is a no-op by construction (spec v3.7 §4b)."
+        )
+
+    prefix = f"v37_case_soc_rashba_3d_sub_apbc_{fixture_name}"
+    with open(str(_DATA_DIR / f"{prefix}_composite_element.json")) as fp:
+        manifest = json.load(fp)
+    i_c = int(manifest["i_c"])
+    s_c = int(manifest["s_c"])
+    j_c = int(manifest["j_c"])
+    t_c = int(manifest["t_c"])
+    T_M = float(manifest["T_M_per_mutation"][mutation_key])
+
+    cell_shape = np.array([4, 4, 4], dtype=np.int64)
+    subshape = np.array([2, 2, 2], dtype=np.int64)
+    Ns = int(np.prod(cell_shape))
+    site_positions = np.array(
+        [[x, y, z] for z in range(4) for y in range(4) for x in range(4)],
+        dtype=np.int64,
+    )
+    all_i = i_c + s_c * Ns
+    all_j = j_c + t_c * Ns
+
+    if mutation_key.startswith("M-gauge-"):
+        gp = np.load(str(_DATA_DIR / f"{prefix}_green.npz"))
+        green_sublattice = gp["green_sublattice"]
+        G_base = _v36_gauge_lift_at_composite_mutated(
+            green_sublattice, i_c, s_c, j_c, t_c,
+            subshape=subshape, cell_shape=cell_shape,
+            site_positions=site_positions,
+            boundary_theta=theta, mutator="baseline",
+        )
+        G_mut = _v36_gauge_lift_at_composite_mutated(
+            green_sublattice, i_c, s_c, j_c, t_c,
+            subshape=subshape, cell_shape=cell_shape,
+            site_positions=site_positions,
+            boundary_theta=theta, mutator=mutation_key,
+        )
+    else:  # M-ship-*
+        eigen = np.load(str(_DATA_DIR / f"{prefix}_eigen.npz"))
+        occ = np.load(str(_DATA_DIR / f"{prefix}_occupation.npz"))
+        A_base, _ = _v37_build_shipping_A_mutated(
+            "baseline", eigen=eigen, occ=occ, cell_shape=cell_shape,
+            subshape=subshape, site_positions=site_positions,
+            theta=theta, ncond=expected_ncond,
+        )
+        A_mut, _ = _v37_build_shipping_A_mutated(
+            mutation_key, eigen=eigen, occ=occ, cell_shape=cell_shape,
+            subshape=subshape, site_positions=site_positions,
+            theta=theta, ncond=expected_ncond,
+        )
+        G_direct_base = np.conj(A_base) @ A_base.T
+        G_direct_mut = np.conj(A_mut) @ A_mut.T
+        G_base = G_direct_base[all_i, all_j]
+        G_mut = G_direct_mut[all_i, all_j]
+
+    G_base_abs = abs(G_base)
+    delta_M = abs(G_mut - G_base)
+    print(
+        f"[{fixture_name}] {mutation_key}: delta_M={delta_M:.3e} "
+        f"T_M={T_M:.3e} |G_base|={G_base_abs:.3e}"
+    )
+    assert delta_M >= T_M, (
+        f"[{fixture_name}] {mutation_key}: delta_M = {delta_M:.3e} < "
+        f"T_M = {T_M:.3e} (|G_base| = {G_base_abs:.3e}); the mutation "
+        "did NOT perturb the composite element above the manifest's "
+        "producer-time sensitivity floor. The shipping code path this "
+        "mutation targets is therefore not being exercised at the "
+        "composite; either regenerate the composite via the Phase 2 "
+        "producer, or investigate why the mutation is orthogonal to "
+        "the composite's dr_folded / sub_offset / twist coordinates."
     )

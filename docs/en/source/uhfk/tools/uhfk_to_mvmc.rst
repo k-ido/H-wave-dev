@@ -157,25 +157,14 @@ Scope (v3.6)
   ``Ncond = 8``).
 
 - **Multi-direction APBC (n_apbc_dirs >= 2) + SOC + SubShape > [1, 1, 1]**
-  remains rejected pre-dispatch. The exact CLI reject message is::
-
-      ERROR: enable_spin_orbital = true + multi-direction APBC
-      (n_apbc_dirs=<count>) + SubShape > [1, 1, 1] is deferred to v3.7.
-      Single-direction APBC + SOC + SubShape > 1 is supported in v3.6 as
-      of case_soc_rashba_2d_sub_apbc.
-
-  The Phase 6 dispatch predicate that fires this reject::
-
-      n_apbc_dirs = sum(1 for t in theta if abs(t - pi) < 1e-12
-                                       or abs(t + pi) < 1e-12)
-      if is_soc_mode and n_apbc_dirs > 1 and any(s != 1 for s in sub_shape):
-          return 2
-
-  A first-principles derivation of the composed twist gauge on
-  multi-direction APBC + SubShape > 1 has not been validated against an
-  E2E fixture (no ``case_soc_rashba_2d_sub_apbc_apbc`` exists in the v3.6
-  tree); the reject exists to fail-fast rather than silently produce a
-  wrong ``trans.def`` / shipping A.
+  was rejected pre-dispatch in v3.6, because the composed twist gauge on
+  multi-direction APBC + SubShape > 1 had not been validated against an
+  E2E fixture; the reject existed to fail-fast rather than silently
+  produce a wrong ``trans.def`` / shipping A. **Superseded in v3.7**:
+  the v3.6 reject message and its ``n_apbc_dirs > 1`` predicate no
+  longer exist in the tree. v3.7 ships four validated multi-direction
+  fixtures and replaces both with the allowlist predicate described
+  under Scope (v3.7) below.
 
 - **v3.6 seven-gate contract** (all seven records PASS on fresh workspace
   for ``case_soc_rashba_2d_sub_apbc``):
@@ -222,11 +211,16 @@ Scope (v3.6)
     ``scripts/seed_complexuhf_from_hwave.py`` writes H-wave's shipping
     A density into ComplexUHF's ``initial.def`` (5-line header for the
     ``IgnoreLinesInDef=5`` convention) with a small Hermitian
-    ``perturb-scale`` (1e-6 for this fixture) so ComplexUHF actually
-    iterates (``run.sh`` asserts the SCF ran >= 1 step via awk-parse
-    of ``uhf.log``) but stays inside H-wave's basin. Post-seeding
-    ComplexUHF runs 9 SCF steps and converges to
-    ``Energy_Total = -25.3717166`` matching H-wave to 10 digits.
+    ``perturb-scale`` so ComplexUHF actually iterates but stays inside
+    H-wave's basin. The figures this section originally carried
+    (``perturb-scale`` 1e-6, 9 SCF steps,
+    ``Energy_Total = -25.3717166``) are superseded: 1e-6 equals the G2
+    tolerance and made that gate passable by a solver returning the
+    seed unchanged. The fixture now runs at ``perturb-scale`` 1e-3
+    under ``flag_fock = true``, taking 70 ComplexUHF SCF steps and
+    converging to ``Energy_Total = -25.390269883203``. See
+    Scope (v3.7) above for the contraction requirement that replaced
+    the old "SCF ran >= 1 step" assertion.
 
   * **Snapshot-workspace rejection**: the snapshot guard resolved
     ``tests/data`` relative to the process CWD, so invocation from
@@ -260,6 +254,165 @@ Scope (v3.6)
   (`tests/test_uhfk_mvmc_pairproduct_compare_wiring.py`), 3 tests for
   the CWD-independent snapshot guard
   (`tests/test_snapshot_rejection_guard_v36.py`).
+
+Scope (v3.7)
+^^^^^^^^^^^^
+
+- **SOC + multi-direction APBC + SubShape > [1, 1, 1]** is shippable in
+  v3.7 for the xy / xz / yz / xyz active-direction masks on
+  ``CellShape = [4, 4, 4]`` / ``SubShape = [2, 2, 2]`` (folded BZ
+  ``[2, 2, 2]``, 64 physical sites, spin-orbital dimension 128). Four
+  shipping fixtures cover the four masks, each with Rashba
+  ``alpha = 0.5`` in the xy plane, a spin-diagonal z hopping
+  ``t_z = -1``, general complex z-direction spin-mixing hopping with
+  coefficient ``0.3 + 0.4j``, and ``U = 2``::
+
+      case_soc_rashba_3d_sub_apbc_xy    AP  AP  P    Ncond = 20
+      case_soc_rashba_3d_sub_apbc_xz    AP  P   AP   Ncond = 20
+      case_soc_rashba_3d_sub_apbc_yz    P   AP  AP   Ncond = 24
+      case_soc_rashba_3d_sub_apbc_xyz   AP  AP  AP   Ncond = 12
+
+  The z-direction spin-mixing block is not Rashba SOC. It gives
+  ``H_z(k_z) = (0.6 cos(k_z) - 0.8 sin(k_z)) sigma_x``, whose even
+  ``0.6 cos(k_z)`` component breaks spin-1/2 time-reversal symmetry.
+  The full hopping remains Hermitian, so these fixtures remain valid for
+  testing the mapping and exercise general complex hopping. A
+  time-reversal-symmetric 3D SOC fixture is a v3.8 follow-up.
+
+  ``Ncond`` is not uniform across the fixtures: each is pinned to the
+  filling that clears both a ``>= 5e-2`` HOMO-LUMO gap and the
+  ``build_pair_list`` partner-balance invariant
+  ``n_occ(k) == n_occ(partner(k))`` on that fixture's own converged
+  spectrum. A scalar gap check alone is not sufficient — it says
+  nothing about how occupied states distribute across the two rows of a
+  canonical/partner pair. Each fixture's ``README.md`` records the full
+  per-candidate scan.
+
+- **``flag_fock = true`` is required** for these fixtures, not optional.
+  The validation binary ``ComplexUHF`` hard-codes the on-site exchange
+  term at compile time (``src/ComplexUHF/include/Def.h``,
+  ``#define Fock 1``) and exposes no runtime switch, so an H-wave run
+  with ``flag_fock = false`` minimises a different mean-field functional
+  from the solver it is being compared against. The mismatch is dormant
+  whenever the converged on-site transverse spin density is negligible
+  (8.6e-17 on the v3.6 fixture), but the v3.7 z-SOC block drives that
+  density to 2.7e-2, which puts the Hartree-only H-wave solution
+  3.1e-3 away from every ComplexUHF fixed point — 3000x the G2a
+  tolerance, and unreachable by any choice of seed.
+
+- **``trans.def`` spin-off-diagonal mapping.** For a Transfer.dat entry
+  ``(R, s, t, v)``, the bridge emits swapped spin endpoints with a
+  conjugated, negated coefficient::
+
+      K[i, t; i+R, s]     = conj(v)
+      trans[i, t; i+R, s] = -conj(v)
+
+  Site endpoints are unchanged. On a real spin-diagonal entry the spin
+  swap is a no-op and the rule reduces to ``trans = -v``. The v3.6 x/y
+  Rashba matrices satisfy ``v[t,s] = -conj(v[s,t])`` at fixed ``R``,
+  which is exactly the condition that makes this rule and the earlier
+  ``trans = +v`` off-diagonal rule emit the same matrix — so v3.6
+  results are unaffected. The v3.7 z-SOC block is spin-symmetric with
+  both real and imaginary parts and does not satisfy that condition,
+  which is what required the general rule. The boundary wrap phase is
+  applied after conjugation. Every shipped fixture has
+  ``theta`` components in ``{0, pi}``, where that phase is real; a
+  general complex twist is out of scope and unvalidated.
+
+- **v3.7 allowlist.** ``SubShape > [1, 1, 1]`` combined with SOC and any
+  APBC direction is checked against an explicit allowlist in
+  ``tools/_uhfk_to_mvmc/allowlist_predicate.py``, shared by the CLI and
+  the static coverage checker so the two cannot drift::
+
+      _V37_ALLOWED_APBC_MASKS = {(1,1,0), (1,0,1), (0,1,1), (1,1,1)}
+      _V37_LATTICE            = ((2,2,2), (4,4,4))   # sub_shape, cell_shape
+      _V36_ALLOWED_APBC_MASKS = {(1,0,0), (0,1,0), (0,0,1)}
+      _V36_LATTICE            = ((2,2,1), (6,4,1))
+
+  Non-SOC runs, ``SubShape = [1, 1, 1]``, and SOC with all-periodic
+  boundaries return early as supported. Anything else that is not in
+  the allowlist is rejected before dispatch with::
+
+      ERROR: SOC + APBC + SubShape combination not in the v3.7
+      allowlist. Supported active-direction masks + shapes: (a) v3.6
+      single-dir APBC on CellShape=[6,4,1]/SubShape=[2,2,1]; (b) v3.7
+      xy/xz/yz/xyz APBC on CellShape=[4,4,4]/SubShape=[2,2,2]. Others
+      are deferred; add a new fixture + gate validation before
+      expanding the allowlist.
+
+- **v3.7 seven-gate contract**: the same seven gates listed under
+  Scope (v3.6) run on each of the four fixtures, for 28 anchored PASS
+  records in total. Worst case observed across the four fixtures on a
+  fresh workspace::
+
+      G0-writer-check    4.16e-17   tol 1e-10
+      G1                 3.41e-13   tol 1e-10
+      G2a-emitted-F      1.59e-07   tol 1e-06
+      G2a-in-memory-A    1.55e-07   tol 1e-06
+      G2b                1.55e-07   tol 1e-06
+      G3                 4.49e-04   tol 1e-02
+      G4                 0.00e+00   tol 2e-01
+
+- **G2 must contract, not merely agree.** ComplexUHF is seeded from
+  H-wave's converged density so both solvers settle in the same
+  broken-symmetry minimum, but that seeding can make the comparison
+  circular: if the seed already satisfies the tolerance, a solver that
+  returns it unchanged passes. Each G2 gate therefore requires the
+  seeded start to be at least ``10 * tol`` away from the reference and
+  the converged result to be inside ``tol``, and records both plus
+  their ratio::
+
+      G2b PASS ... initial_delta=5.037430e-04 final_delta=2.705664e-08
+                   contraction_ratio=5.371120e-05
+
+  The requirement applies to every fixture that runs G2, with no
+  exemption, and non-finite values are refused before any comparison
+  (a NaN delta would otherwise make both bounds compare False and slip
+  through).
+
+  This is only possible because ``flag_fock = true`` now holds on both
+  the v3.6 and the v3.7 shipping fixtures. Whether a usable seed window
+  exists at all depends on the functional. Where H-wave and ComplexUHF
+  agree, the basin is wide -- on the v3.7 lattice seeds up to 1e-2 still
+  converge back, so ``1e-3`` starts ~500x outside tolerance with room to
+  spare. Where they disagree there may be no window whatsoever: the v3.6
+  fixture under ``flag_fock = false`` had H-wave's density as a
+  stationary but REPELLING point of ComplexUHF's map, with a 5e-6 seed
+  escaping 4.761e-2 entirely along the on-site transverse spin channel
+  the Fock term acts on. Its basin radius was 2.4x the G2 tolerance,
+  leaving nothing between "inside the tolerance" and "outside the
+  basin". Unifying the flag turned that fixture's G2 from a
+  stationarity check into a real convergence check: it now starts at
+  3.888e-04 and contracts to 2.437e-08.
+
+  The v3.7 G2 figures above are larger than the ones this document
+  carried before the contraction requirement existed (~3e-8). Those
+  smaller numbers were an artifact of seeding essentially at the answer;
+  ~1.6e-7 is ComplexUHF's honest converged agreement on the xyz
+  fixture, which contracts more slowly than its siblings (91 SCF steps
+  against 16-17).
+
+  G4 additionally re-verifies a per-direction 30-entry mutation matrix
+  against each fixture's committed ``composite_element.json``. The
+  schema always has 30 entries, but only active-axis entries gate: the
+  xy/xz/yz fixtures each have 20 positive-threshold evaluations plus 10
+  inactive-axis zero-threshold entries, while xyz has 30
+  positive-threshold evaluations. The 9 active axes therefore execute
+  90 distinct, policy-gated mutations across the four fixtures. Earlier
+  manifests used a sub_offset-sign-flip M-4 mutation that was an exact
+  no-op on ``L_folded = [2, 2, 2]`` and silently assigned zero
+  thresholds to 18 active-axis entries (4 + 4 + 4 + 6), leaving only 72
+  effective evaluations. An interim fix made per-direction M-ship-4 and
+  M-ship-5 both omit sub_offset, leaving 90 positive thresholds but only
+  81 distinct evaluations. M-gauge-4 still omits sub_offset on its named
+  axis; M-ship-4 now halves that contribution, while M-ship-5 omits it.
+  The v3.6 10-entry whole-vector sign-flip semantics remain unchanged.
+  Manifest production fails closed on structural degeneracy, non-finite
+  numeric data, threshold-policy drift, or a sub-threshold self-check.
+  The runtime guard independently recomputes the threshold policy. Run
+  all four with
+  ``tests/validation/uhfk_mvmc_pairproduct/run.sh --all-v37``, or one
+  fixture at a time by passing its case name.
 
 Workflow
 ^^^^^^^^
@@ -354,26 +507,34 @@ H-wave's ``Transfer.dat`` (Wannier90-like format,
 ``iWan = 2 * a_phys + spin + 1``) and emits mVMC's ``trans.def`` with
 ``(i, s, j, t, re, im)`` rows preserving Rashba off-diagonal spin.
 
-Sign convention (empirically pinned):
+Mapping convention:
 
-- ``s == t`` (NN hopping): ``trans = -val_hwave`` (matches vmcdry's
-  own sign flip).
-- ``s != t`` (Rashba): ``trans = +val_hwave``.
+For a ``Transfer.dat`` entry ``(R, s, t, v)``, the emitter swaps the
+spin endpoints and conjugates:
 
-The mixed convention ``(sign_diag = -1, sign_offdiag = +1)`` is
-**empirically pinned** via ComplexUHF verification at 4.4e-8% agreement
-on ``case_soc_rashba_2d_nosub``. The mVMC convention is
-``H = -Σ trans c†c``, but the exact interaction between the
-source-target index convention and H-wave's k-space Hamiltonian is
-**not derivable from first principles alone** in this bridge — see
-``tools/_uhfk_to_mvmc/trans_emit.py`` module docstring for the empirical
-basis and the aborted "derived from H-wave's ``sc.py`` swap" story
-(``sc.py`` performs an ``epsilon_k[orb2, orb1]`` swap that ``uhfk.py``
-does not perform, so the swap-derivation does not compose through).
-A uniform flip (``-val`` on both) produces a 42.58% ⟨H⟩ delta on the
-same fixture. **Re-verify against ``case_soc_rashba_2d_nosub`` E2E after
-any mVMC or H-wave version bump** — the mVMC-side mechanism cites
-``locgrn_fsz.c:128`` which mVMC's own author marked ``//TBC``.
+- ``K[i, t; i+R, s] = conj(v)``
+- ``trans[i, t; i+R, s] = -conj(v)``
+
+Site endpoints are unchanged. On a real spin-diagonal entry the swap is
+a no-op and the rule reduces to ``trans = -v``, matching vmcdry's own
+sign flip. The mVMC convention is ``H = -Σ trans c†c``.
+
+This supersedes the earlier mixed rule (``-val`` when ``s == t``,
+``+val`` when ``s != t``), which was empirically pinned rather than
+derived. That rule is a special case, not an equivalent: the v3.6 x/y
+Rashba matrices satisfy ``v[t,s] = -conj(v[s,t])`` at fixed ``R``, which
+is exactly the condition under which the two rules emit the same matrix.
+The v3.7 z-SOC block is spin-symmetric with both real and imaginary
+parts and does not satisfy it, where the old rule reproduced H-wave's
+bare ``K`` only to ``6.0e-01`` (256 entries above ``1e-10``) against
+``1.1e-12`` (none) for the general rule.
+
+Compatibility with v3.6 is matrix equivalence, not byte identity: the
+emitted text differs on off-diagonal rows and on some signed zeros, but
+the assembled Hamiltonian is identical and the v3.6 seven-gate E2E
+passes unchanged. See the ``tools/_uhfk_to_mvmc/trans_emit.py`` module
+docstring for the derivation and the verification numbers, and
+Scope (v3.7) above for the boundary-phase scope.
 
 New CLI flags (SOC-only): ``--transfer <path>`` and
 ``--emit-trans <path>``.

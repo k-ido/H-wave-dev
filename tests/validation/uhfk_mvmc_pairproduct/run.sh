@@ -3,6 +3,40 @@
 # Usage: ./run.sh case_pbc   (or case_apbc)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="${HERE}/../../.."
+
+_validate_transfer_hermiticity() {
+  local transfer_path="$1"
+  PYTHONPATH="${ROOT}/src:${ROOT}" python3 - "${transfer_path}" <<'PYEOF'
+import sys
+
+from tools._uhfk_to_mvmc.transfer_hermiticity import (
+    check_transfer_dat_hermiticity,
+    TransferHermiticityError,
+)
+
+path = sys.argv[1]
+try:
+    check_transfer_dat_hermiticity(path)
+except (FileNotFoundError, TransferHermiticityError) as exc:
+    print(f"run.sh: Transfer.dat Hermiticity check failed: {exc}", file=sys.stderr)
+    raise SystemExit(1) from exc
+print(f"Transfer.dat Hermiticity check: PASS ({path})")
+PYEOF
+}
+
+if [[ "${1:-}" == "--all-v37" ]]; then
+  set -eux
+  for name in xy xz yz xyz; do
+    _validate_transfer_hermiticity \
+      "${HERE}/case_soc_rashba_3d_sub_apbc_${name}/Transfer.dat"
+  done
+  for name in xy xz yz xyz; do
+    bash "$0" case_soc_rashba_3d_sub_apbc_${name}
+  done
+  echo "--all-v37: SEVEN-GATE PASS x 4 fixtures"
+  exit 0
+fi
 
 # vmc.out / UHF are built against conda-provided libopenblas / libmpi that
 # usually live under a Python env's lib dir (e.g. miniconda3/envs/py39/lib).
@@ -142,7 +176,6 @@ run_native() {
 }
 
 CASE="${1:-case_pbc}"
-ROOT="${HERE}/../../.."
 
 # Codex v3.4 Rev.4 finding: reject path-traversing CASE values so a
 # `../whatever` or absolute path cannot cause the later `rm -rf` on
@@ -177,6 +210,8 @@ fi
 # From this point on, use the resolved canonical path for all
 # destructive operations.
 CASE_DIR="${CASE_DIR_REAL}"
+
+_validate_transfer_hermiticity "${CASE_DIR}/Transfer.dat"
 
 # We reuse the mVMC build under apbc_complexuhf/build/mvmc to avoid two copies.
 MVMC_BUILD="${HERE}/../apbc_complexuhf/build/mvmc/build"
@@ -218,7 +253,7 @@ main()
 echo "  H-wave UHFk SCF: ${HWAVE_WORK}/output/*"
 
 # ---- step 1.5: harness-gate — assert target occupation per case ----
-if grep -qE "case_(pbc_sz2|zeeman_sz_free|soc_rashba_2d_nosub|soc_rashba_2d_nosub_apbc|soc_rashba_2d_sub|soc_rashba_2d_sub_apbc)" <<< "${CASE}"; then
+if grep -qE "case_(pbc_sz2|zeeman_sz_free|soc_rashba_2d_nosub|soc_rashba_2d_nosub_apbc|soc_rashba_2d_sub|soc_rashba_2d_sub_apbc|soc_rashba_3d_sub_apbc_(xy|xz|yz|xyz))" <<< "${CASE}"; then
   python3 "${HERE}/scripts/assert_occupation.py" "${CASE_DIR}" "${HWAVE_WORK}" || {
     echo "harness-gate: occupation assertion failed for ${CASE}" >&2
     exit 1
@@ -317,16 +352,19 @@ fi
 # InOrbitalGeneral consumer sees the same classes the bridge used.
 BRIDGE_ORBITALIDX_ARGS=()
 BRIDGE_EMIT_ORBITALIDX_PATH=""
-if [[ "${CASE}" == "case_soc_rashba_2d_sub" || "${CASE}" == "case_soc_rashba_2d_sub_apbc" ]]; then
+if [[ "${CASE}" == "case_soc_rashba_2d_sub" || \
+      "${CASE}" == "case_soc_rashba_2d_sub_apbc" || \
+      "${CASE}" == case_soc_rashba_3d_sub_apbc_* ]]; then
   BRIDGE_EMIT_ORBITALIDX_PATH="${MVMC_WORK}/orbitalidxgen.def.bridge"
   BRIDGE_ORBITALIDX_ARGS=(
     --emit-orbitalidx "${BRIDGE_EMIT_ORBITALIDX_PATH}"
   )
 fi
-# v3.6 seven-gate case injects --debug-writer so F_pre/F_post are dumped
+# Seven-gate cases inject --debug-writer so F_pre/F_post are dumped
 # into ${MVMC_WORK} and later frozen into ${WORK}/bridge/ for G0/G2a.
 BRIDGE_DEBUG_ARGS=()
-if [[ "${CASE}" == "case_soc_rashba_2d_sub_apbc" ]]; then
+if [[ "${CASE}" == "case_soc_rashba_2d_sub_apbc" || \
+      "${CASE}" == case_soc_rashba_3d_sub_apbc_* ]]; then
   BRIDGE_DEBUG_ARGS=(--debug-writer)
 fi
 python3 tools/uhfk_to_mvmc.py \
@@ -401,10 +439,32 @@ OUT_FILE="$(ls output/zvo_out_*.dat 2>/dev/null | head -n1)"
 [[ -n "${OUT_FILE}" ]] || { echo "mVMC produced no zvo_out output" >&2; exit 1; }
 echo "  vmc.out -> ${MVMC_WORK}/${OUT_FILE}"
 
-# ---- v3.6 case_soc_rashba_2d_sub_apbc: seven-gate branch ----
-# Non-v3.6 cases fall through to the legacy 3-arg energy compare at the
-# bottom; v3.6 case reroutes into the full seven-gate flow per spec §6.2.
-if [[ "${CASE}" == "case_soc_rashba_2d_sub_apbc" ]]; then
+# ---- v3.6/v3.7 SOC + SubShape APBC: seven-gate branch ----
+# Other cases fall through to the legacy 3-arg energy compare at the bottom.
+if [[ "${CASE}" == "case_soc_rashba_2d_sub_apbc" ]] || \
+   [[ "${CASE}" == case_soc_rashba_3d_sub_apbc_* ]]; then
+
+  # Phase 5 static/live gates are v3.7-only.
+  PHASE5_EXPECTED_MASK=""
+  case "${CASE}" in
+    case_soc_rashba_3d_sub_apbc_xy)
+      PHASE5_EXPECTED_MASK="1, 1, 0"
+      ;;
+    case_soc_rashba_3d_sub_apbc_xz)
+      PHASE5_EXPECTED_MASK="1, 0, 1"
+      ;;
+    case_soc_rashba_3d_sub_apbc_yz)
+      PHASE5_EXPECTED_MASK="0, 1, 1"
+      ;;
+    case_soc_rashba_3d_sub_apbc_xyz)
+      PHASE5_EXPECTED_MASK="1, 1, 1"
+      ;;
+    case_soc_rashba_3d_sub_apbc_*)
+      echo "ERROR: unknown v3.7 case name '${CASE}'; define PHASE5_EXPECTED_MASK" >&2
+      echo "for this case before enabling it." >&2
+      exit 1
+      ;;
+  esac
 
   # normalize_mvmc_output per spec §5.6: pick the unique zvo_out_001.dat
   # under the two v3.6-supported layouts (${WORK_DIR}/mvmc/output/,
@@ -505,7 +565,11 @@ if [[ "${CASE}" == "case_soc_rashba_2d_sub_apbc" ]]; then
   echo "  bridge shipping snapshot -> ${BRIDGE_SHIP}/"
 
   # ---- step 6.3: ComplexUHF SCF for G2a/G2b ----
-  COMPLEXUHF_CASE="${HERE}/../apbc_complexuhf/case_soc_rashba_2d_sub_apbc"
+  if [[ "${CASE}" == "case_soc_rashba_2d_sub_apbc" ]]; then
+    COMPLEXUHF_CASE="${HERE}/../apbc_complexuhf/case_soc_rashba_2d_sub_apbc"
+  else
+    COMPLEXUHF_CASE="${HERE}/../apbc_complexuhf/${CASE}"
+  fi
   COMPLEXUHF_WORK="${WORK}/complexuhf"
   UHF="${HERE}/../apbc_complexuhf/build/mvmc/build/src/ComplexUHF/UHF"
   if [[ ! -x "${UHF}" ]]; then
@@ -516,14 +580,109 @@ if [[ "${CASE}" == "case_soc_rashba_2d_sub_apbc" ]]; then
   cp "${COMPLEXUHF_CASE}/stan.in" "${COMPLEXUHF_WORK}/stan.in"
   (
     cd "${COMPLEXUHF_WORK}"
+    complexuhf_files_before_vmcdry=()
+    case "${CASE}" in
+      case_soc_rashba_3d_sub_apbc_*)
+        mapfile -d '' -t complexuhf_files_before_vmcdry < <(
+          find . -mindepth 1 -maxdepth 1 -type f -printf '%f\0' | sort -z
+        )
+        ;;
+      case_soc_rashba_2d_sub_apbc)
+        ;;
+      *)
+        echo "ERROR: unsupported ComplexUHF snapshot case: ${CASE}" >&2
+        exit 1
+        ;;
+    esac
     run_native "${VMCDRY}" stan.in </dev/null > vmcdry.log 2>&1
+    complexuhf_vmcdry_files=()
+    case "${CASE}" in
+      case_soc_rashba_3d_sub_apbc_*)
+        mapfile -d '' -t complexuhf_files_after_vmcdry < <(
+          find . -mindepth 1 -maxdepth 1 -type f -printf '%f\0' | sort -z
+        )
+        mapfile -d '' -t complexuhf_vmcdry_files < <(
+          comm -z -13 \
+            <(printf '%s\0' "${complexuhf_files_before_vmcdry[@]}") \
+            <(printf '%s\0' "${complexuhf_files_after_vmcdry[@]}")
+        )
+        ;;
+      case_soc_rashba_2d_sub_apbc)
+        ;;
+      *)
+        echo "ERROR: unsupported ComplexUHF snapshot case: ${CASE}" >&2
+        exit 1
+        ;;
+    esac
+    # BEGIN task6a2-authoritative-bundle-staging
+    case "${CASE}" in
+      case_soc_rashba_3d_sub_apbc_*)
+        complexuhf_bundle_files=(namelist.def modpara.def locspn.def geometry.dat coulombintra.def orbitalidx.def orbitalidxpara.def)
+        for bundle_file in "${complexuhf_bundle_files[@]}"; do
+          cp "${COMPLEXUHF_CASE}/${bundle_file}" "./${bundle_file}" || {
+            echo "ERROR: ${COMPLEXUHF_CASE}: failed to stage ${bundle_file}" >&2
+            exit 1
+          }
+          if ! cmp -s "${COMPLEXUHF_CASE}/${bundle_file}" "./${bundle_file}"; then
+            echo "ERROR: ${COMPLEXUHF_CASE}: staged bundle mismatch: ${bundle_file}" >&2
+            exit 1
+          fi
+        done
+
+        # StdFace output is only a discard-and-verify baseline for v3.7.
+        # Remove every newly-created vmcdry file outside the committed bundle
+        # and the files supplied or retained by adjacent harness steps.
+        for workspace_file in "${complexuhf_vmcdry_files[@]}"; do
+          case "${workspace_file}" in
+            namelist.def|modpara.def|locspn.def|geometry.dat|coulombintra.def|orbitalidx.def|orbitalidxpara.def|trans.def|initial.def|vmcdry.log)
+              ;;
+            *)
+              rm -f -- "./${workspace_file}" || {
+                echo "ERROR: ${COMPLEXUHF_CASE}: failed to delete unexpected vmcdry file: ${workspace_file}" >&2
+                exit 1
+              }
+              ;;
+          esac
+        done
+        for workspace_file in "${complexuhf_vmcdry_files[@]}"; do
+          case "${workspace_file}" in
+            namelist.def|modpara.def|locspn.def|geometry.dat|coulombintra.def|orbitalidx.def|orbitalidxpara.def|trans.def|initial.def|vmcdry.log)
+              ;;
+            *)
+              if [[ -e "./${workspace_file}" ]]; then
+                echo "ERROR: ${COMPLEXUHF_CASE}: unexpected vmcdry file survived staging: ${workspace_file}" >&2
+                exit 1
+              fi
+              ;;
+          esac
+        done
+        ;;
+      case_soc_rashba_2d_sub_apbc)
+        ;;
+      *)
+        echo "ERROR: unsupported ComplexUHF staging case: ${CASE}" >&2
+        exit 1
+        ;;
+    esac
+    # END task6a2-authoritative-bundle-staging
     # StdFace's FermionHubbardGC drops Rashba s != t entries. Replace
     # StdFace's trans.def with the H-wave bridge's SOC-preserving
     # trans.def (built from Transfer.dat) so ComplexUHF's Hamiltonian
     # matches H-wave's. Same substitution as v3.1 SOC (§3.8).
     cp "${MVMC_WORK}/trans.def" "./trans.def"
     # Apply the case-specific ComplexUHF modpara override (NMPTrans etc.)
-    bash "${COMPLEXUHF_CASE}/complexuhf_modpara_override.txt"
+    case "${CASE}" in
+      case_soc_rashba_2d_sub_apbc)
+        bash "${COMPLEXUHF_CASE}/complexuhf_modpara_override.txt"
+        ;;
+      case_soc_rashba_3d_sub_apbc_*)
+        # The committed v3.7 modpara.def is authoritative.
+        ;;
+      *)
+        echo "ERROR: unsupported ComplexUHF override case: ${CASE}" >&2
+        exit 1
+        ;;
+    esac
   )
   # Codex adversarial-review 2026-07-12 hardening: seed ComplexUHF with
   # H-wave's converged density in the physical basis. Without seeding,
@@ -532,22 +691,67 @@ if [[ "${CASE}" == "case_soc_rashba_2d_sub_apbc" ]]; then
   # rendering G2a/G2b element-level comparisons meaningless. With
   # seeding, both solvers converge to the SAME minimum and G2a/G2b at
   # 1e-6 becomes achievable.
+  # The seed perturbation must be large enough that G2 starts OUTSIDE
+  # its own tolerance -- otherwise a no-op solver passes by handing the
+  # seed straight back -- and small enough to stay in H-wave's basin.
+  # All fixtures in this seven-gate branch now use flag_fock=true and
+  # share ComplexUHF's functional. At 1e-3 the measured initial density
+  # delta is hundreds of times the 1e-6 tolerance, while remaining well
+  # inside the common attraction basin and converging to O(1e-8).
+  PERTURB_SCALE="1e-3"
+  echo "  seed perturb-scale = ${PERTURB_SCALE} (shared Fock-consistent value)"
   python3 "${HERE}/scripts/seed_complexuhf_from_hwave.py" \
       --hwave-workspace "${HWAVE_WORK}" \
       --complexuhf-workspace "${COMPLEXUHF_WORK}" \
       --initial-def initial.def \
-      --perturb-scale 1e-6
+      --perturb-scale "${PERTURB_SCALE}"
+
   (
     cd "${COMPLEXUHF_WORK}"
-    run_native "${UHF}" namelist.def > uhf.log 2>&1 \
-      || { echo "ComplexUHF UHF failed; tail uhf.log:" >&2; tail -50 uhf.log >&2; exit 1; }
-    # Codex re-review 2026-07-12 finding 1 assertion: ComplexUHF MUST
-    # actually iterate. Seeding with H-wave's density + zero
-    # perturbation lands the solver at the fixed point immediately (0
-    # steps), turning G2a/G2b into a read-back of the supplied seed
-    # rather than an independent cross-solver check. With the default
-    # perturb_scale=1e-3, ComplexUHF is expected to run at least one
-    # non-trivial SCF step; we fail closed if it terminated at step 0.
+    if [[ -n "${PHASE5_EXPECTED_MASK}" ]]; then
+      if ! python3 - "${ROOT}" "${COMPLEXUHF_CASE}" "${WORK}" "${UHF}" \
+          "${PHASE5_EXPECTED_MASK}" > uhf.log 2>&1 <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from tools._uhfk_to_mvmc.phase5_gate import run_phase5_gate
+
+fixture_root = Path(sys.argv[2])
+try:
+    result = run_phase5_gate(
+        fixture_root=fixture_root,
+        workspace=Path(sys.argv[3]),
+        expected_phase_mask=tuple(
+            int(value.strip()) for value in sys.argv[5].split(",")
+        ),
+        uhf_binary=sys.argv[4],
+    )
+except Exception as exc:
+    raise SystemExit(
+        f"Phase 5 gate failed for {fixture_root.name}: {exc}"
+    ) from exc
+sys.stdout.write(result.stdout)
+sys.stderr.write(result.stderr)
+PY
+      then
+        echo "Phase 5 gated ComplexUHF run failed (gate check or solver); tail uhf.log:" >&2
+        tail -50 uhf.log >&2
+        exit 1
+      fi
+    else
+      # Preserve the established v3.6 launch path byte-for-byte.
+      run_native "${UHF}" namelist.def > uhf.log 2>&1 || {
+        echo "ComplexUHF UHF failed; tail uhf.log:" >&2
+        tail -50 uhf.log >&2
+        exit 1
+      }
+    fi
+    # Residual SCF-log sanity check. The primary non-vacuity invariant
+    # lives in compare.py: every G2 gate requires the seeded density to
+    # start at least 10*tol outside H-wave's reference and the converged
+    # density to finish inside tol. With the restored shipped
+    # perturb_scale=1e-3, ComplexUHF should also report non-zero steps.
     scf_steps=$(awk '/finished at/ {print $(NF-1); exit}' uhf.log 2>/dev/null)
     if [[ -z "${scf_steps}" ]]; then
       echo "ComplexUHF: could not parse SCF step count from uhf.log" >&2
@@ -558,7 +762,7 @@ if [[ "${CASE}" == "case_soc_rashba_2d_sub_apbc" ]]; then
       echo "ComplexUHF terminated at ${scf_steps} SCF steps; the seed" >&2
       echo "was already at the SCF fixed point (circular G2a/G2b)." >&2
       echo "seed_complexuhf_from_hwave must apply a non-zero" >&2
-      echo "--perturb-scale so the solver actually iterates." >&2
+      echo "--perturb-scale ${PERTURB_SCALE} so the solver actually iterates." >&2
       exit 1
     fi
   )

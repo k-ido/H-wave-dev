@@ -10,8 +10,10 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -26,14 +28,63 @@ _GUARD_PATH = os.path.abspath(
         "soc_apbc_topology_guard.py",
     )
 )
-_REAL_CASE_DIR = os.path.abspath(
-    os.path.join(
-        os.path.dirname(__file__),
-        "validation",
-        "uhfk_mvmc_pairproduct",
-        "case_soc_rashba_2d_sub_apbc",
-    )
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_DATA_DIR = _REPO_ROOT / "tests" / "data"
+_CASE_ROOT = (
+    _REPO_ROOT / "tests" / "validation" / "uhfk_mvmc_pairproduct"
 )
+_REAL_CASE_SOURCE = _CASE_ROOT / "case_soc_rashba_2d_sub_apbc"
+_REAL_CASE_DIR = str(_REAL_CASE_SOURCE)
+# v3.7 fixture whose active APBC axes are (y, z) -- NO x. Used to
+# regression-test that the sub_offset-differs check gates on the
+# fixture's actual active axes rather than a hardcoded x (see the 3b
+# regression test below).
+_REAL_CASE_SOURCE_YZ = _CASE_ROOT / "case_soc_rashba_3d_sub_apbc_yz"
+_REAL_CASE_DIR_YZ = str(_REAL_CASE_SOURCE_YZ)
+_REAL_CASE_SOURCE_XY = _CASE_ROOT / "case_soc_rashba_3d_sub_apbc_xy"
+_REAL_CASE_DIR_XY = str(_REAL_CASE_SOURCE_XY)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _real_case_workspaces(tmp_path_factory):
+    """Build clean-checkout G4 workspaces from tracked snapshots."""
+    global _REAL_CASE_DIR, _REAL_CASE_DIR_YZ, _REAL_CASE_DIR_XY
+
+    workspace_root = tmp_path_factory.mktemp("g4-real-cases")
+    case_specs = (
+        (
+            _REAL_CASE_SOURCE,
+            "v36_case_soc_rashba_2d_sub_apbc",
+            "case_soc_rashba_2d_sub_apbc",
+        ),
+        (
+            _REAL_CASE_SOURCE_YZ,
+            "v37_case_soc_rashba_3d_sub_apbc_yz",
+            "case_soc_rashba_3d_sub_apbc_yz",
+        ),
+        (
+            _REAL_CASE_SOURCE_XY,
+            "v37_case_soc_rashba_3d_sub_apbc_xy",
+            "case_soc_rashba_3d_sub_apbc_xy",
+        ),
+    )
+    workspaces = []
+    for source, snapshot_prefix, case_name in case_specs:
+        workspace = workspace_root / case_name
+        output = workspace / "output"
+        output.mkdir(parents=True)
+        shutil.copy2(source / "composite_element.json", workspace)
+        for name in ("green", "eigen", "occupation"):
+            shutil.copy2(
+                _DATA_DIR / f"{snapshot_prefix}_{name}.npz",
+                output / f"{name}.npz",
+            )
+        workspaces.append(str(workspace))
+
+    original_dirs = (_REAL_CASE_DIR, _REAL_CASE_DIR_YZ, _REAL_CASE_DIR_XY)
+    _REAL_CASE_DIR, _REAL_CASE_DIR_YZ, _REAL_CASE_DIR_XY = workspaces
+    yield
+    _REAL_CASE_DIR, _REAL_CASE_DIR_YZ, _REAL_CASE_DIR_XY = original_dirs
 
 
 def _load_guard_module():
@@ -104,6 +155,9 @@ def test_g4_rejects_missing_composite_element(tmp_path):
     )
     manifest = _load_real_manifest()
     manifest["G_c_abs"] = 10.0 * manifest["G_c_abs"]
+    expected_threshold = max(1e-5, 0.10 * manifest["G_c_abs"])
+    for mutator_id in manifest["T_M_per_mutation"]:
+        manifest["T_M_per_mutation"][mutator_id] = expected_threshold
     m_path = os.path.join(ws, "manifest.json")
     _write_manifest(m_path, manifest)
     res = _run_cli(ws, m_path)
@@ -152,6 +206,35 @@ def test_g4_rejects_no_sub_offset_diff(tmp_path):
 
 
 # ---------------------------------------------------------------------
+# 3b. Regression: the sub_offset-differs check must gate on the
+# fixture's ACTUAL active APBC axis, not a hardcoded x. A manifest
+# whose only active axis is y (theta = (0, pi, 0)) with sub_offset
+# differing in x but NOT in y must still be rejected -- prior to the
+# v3.7 Task 2d fix (case_soc_rashba_3d_sub_apbc_yz), this check was
+# hardcoded to axis 0 (x) and would have wrongly PASSED this manifest
+# because so_i_x != so_j_x, even though the truly-active y axis has
+# so_i_y == so_j_y (the real APBC-direction condition from v3.6 spec
+# §4.3 / v3.7 spec §4 is unexercised).
+# ---------------------------------------------------------------------
+
+
+def test_g4_rejects_no_sub_offset_diff_on_non_x_active_axis(tmp_path):
+    ws = _make_stub_workspace(
+        tmp_path, green_source=_load_real_manifest_dir_green_file(),
+    )
+    manifest = _load_real_manifest()
+    manifest["theta_radians"] = [0.0, 3.141592653589793, 0.0]  # y-only APBC
+    manifest["sub_offset_i"] = [0, 0, 0]
+    manifest["sub_offset_j"] = [1, 0, 0]  # x differs, active-axis y does not
+    m_path = os.path.join(ws, "manifest.json")
+    _write_manifest(m_path, manifest)
+    res = _run_cli(ws, m_path)
+    assert res.returncode == 2, res.stderr
+    assert res.stdout == "", res.stdout
+    assert "sub_offset_y differs" in res.stderr
+
+
+# ---------------------------------------------------------------------
 # 4. Manifest G_c_abs below the 1e-3 magnitude floor.
 # ---------------------------------------------------------------------
 
@@ -162,6 +245,9 @@ def test_g4_rejects_low_magnitude_composite(tmp_path):
     )
     manifest = _load_real_manifest()
     manifest["G_c_abs"] = 5e-4  # below 1e-3
+    expected_threshold = max(1e-5, 0.10 * manifest["G_c_abs"])
+    for mutator_id in manifest["T_M_per_mutation"]:
+        manifest["T_M_per_mutation"][mutator_id] = expected_threshold
     m_path = os.path.join(ws, "manifest.json")
     _write_manifest(m_path, manifest)
     res = _run_cli(ws, m_path)
@@ -171,25 +257,75 @@ def test_g4_rejects_low_magnitude_composite(tmp_path):
 
 
 # ---------------------------------------------------------------------
-# 5. Mutation delta below T_M (T_M artificially inflated in manifest).
+# 5. Mutation delta below the policy-derived T_M.
 # ---------------------------------------------------------------------
 
 
 def test_g4_rejects_mutation_below_T_M(tmp_path):
+    """Keep the manifest policy valid, but construct a current-run green
+    tensor whose target element has only folded k=0 support. M-gauge-4
+    changes only the folded phase, so its delta is exactly zero while the
+    composite magnitude and the preceding gauge mutations remain strong."""
     ws = _make_stub_workspace(
         tmp_path, green_source=_load_real_manifest_dir_green_file(),
     )
     manifest = _load_real_manifest()
-    # Inflate M-gauge-1's T_M so no reasonable current-run delta can
-    # meet it.
-    manifest["T_M_per_mutation"]["M-gauge-1"] = 10.0
+    with np.load(_load_real_manifest_dir_green_file()) as green_npz:
+        synthetic = np.zeros_like(green_npz["green_sublattice"])
+    folded_orb_i = (
+        manifest["sub_offset_i"][0]
+        + manifest["sub_shape"][0] * (
+            manifest["sub_offset_i"][1]
+            + manifest["sub_shape"][1] * manifest["sub_offset_i"][2]
+        )
+    )
+    folded_orb_j = (
+        manifest["sub_offset_j"][0]
+        + manifest["sub_shape"][0] * (
+            manifest["sub_offset_j"][1]
+            + manifest["sub_shape"][1] * manifest["sub_offset_j"][2]
+        )
+    )
+    aa = 2 * folded_orb_i + manifest["s_c"]
+    bb = 2 * folded_orb_j + manifest["t_c"]
+    synthetic[:, 0, aa, 0, bb] = manifest["G_c_abs"]
+    np.savez(
+        os.path.join(ws, "hwave", "green.npz"),
+        green_sublattice=synthetic,
+    )
     m_path = os.path.join(ws, "manifest.json")
     _write_manifest(m_path, manifest)
     res = _run_cli(ws, m_path)
     assert res.returncode == 2, res.stderr
     assert res.stdout == "", res.stdout
-    assert "M-gauge-1" in res.stderr
+    assert "M-gauge-4" in res.stderr
     assert "T_M" in res.stderr
+
+
+@pytest.mark.parametrize(
+    ("mutator_id", "threshold", "error_fragment"),
+    [
+        ("M-gauge-1-x", float("nan"), "finite"),
+        ("M-gauge-1-x", 1e-300, "threshold policy"),
+        ("M-gauge-1-x", 0.0, "threshold policy"),
+        ("M-gauge-1-z", 1e-5, "inactive"),
+    ],
+)
+def test_g4_rejects_manifest_threshold_policy_drift(
+    tmp_path, mutator_id, threshold, error_fragment,
+):
+    manifest_path = os.path.join(_REAL_CASE_DIR_XY, "composite_element.json")
+    with open(manifest_path) as fp:
+        manifest = json.load(fp)
+    manifest["T_M_per_mutation"][mutator_id] = threshold
+    drifted_path = tmp_path / "manifest.json"
+    _write_manifest(drifted_path, manifest)
+
+    res = _run_cli(_REAL_CASE_DIR_XY, str(drifted_path))
+
+    assert res.returncode == 2, res.stderr
+    assert res.stdout == "", res.stdout
+    assert error_fragment in res.stderr.lower()
 
 
 # ---------------------------------------------------------------------
@@ -241,12 +377,27 @@ def test_g4_passes_on_real_case_soc_rashba_2d_sub_apbc(tmp_path):
     assert "helper=soc_apbc_topology_guard" in res.stdout
 
 
+def test_g4_passes_on_real_case_soc_rashba_3d_sub_apbc_yz(tmp_path):
+    """Sanity + 3b regression: the guard MUST PASS on the committed
+    yz fixture (v3.7 Task 2d), whose active APBC axes are (y, z) with
+    NO x. This is the concrete case that exposed the hardcoded-x
+    sub_offset bug: the composite this fixture's own producer selects
+    has sub_offset differing in y and z but NOT in x (x is not an
+    APBC direction here, so the v3.7 §4 addendum places no requirement
+    on it), which a hardcoded ``sub_offset_x`` check rejects even
+    though the fixture is fully spec-compliant."""
+    manifest_path = os.path.join(_REAL_CASE_DIR_YZ, "composite_element.json")
+    res = _run_cli(_REAL_CASE_DIR_YZ, manifest_path)
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.startswith("G4 PASS mode=g4 "), res.stdout
+    assert "artifact_source=hwave+bridge+composite-manifest" in res.stdout
+    assert "helper=soc_apbc_topology_guard" in res.stdout
+
+
 # ---------------------------------------------------------------------
 # Helper: load the real fixture's green.npz for cloning.
 # ---------------------------------------------------------------------
 
 
 def _load_real_manifest_dir_green_file():
-    from pathlib import Path
-
     return Path(_REAL_CASE_DIR) / "output" / "green.npz"

@@ -8,6 +8,7 @@ import pytest
 
 from tools._uhfk_to_mvmc.energy_compare import (
     EnergyCompareError,
+    _parse_mvmc_zvo_out,
     _resolve_g3_paths,
     energy_relative_delta,
 )
@@ -26,7 +27,7 @@ def _write_mvmc_zvo_out(tmp_path, samples):
     path = tmp_path / "zvo_out_001.dat"
     lines = []
     for h in samples:
-        lines.append(f"{h:.15e} {h*h:.15e} 0.0 0.0\n")
+        lines.append(f"{h:.15e} {h*h:.15e} 0.0 0.0 0.0 0.0\n")
     path.write_text("".join(lines))
     return str(path)
 
@@ -99,6 +100,27 @@ def test_energy_relative_delta_mvmc_empty_raises(tmp_path):
         )
 
 
+def test_parse_mvmc_zvo_out_rejects_truncated_row(tmp_path):
+    path = tmp_path / "zvo_out_001.dat"
+    path.write_text("-1.25\n")
+    with pytest.raises(EnergyCompareError, match="expected exactly 6 columns"):
+        _parse_mvmc_zvo_out(str(path))
+
+
+def test_parse_mvmc_zvo_out_rejects_non_finite_non_energy_column(tmp_path):
+    path = tmp_path / "zvo_out_001.dat"
+    path.write_text("-1.25 nan 0.0 0.0 0.0 0.0\n")
+    with pytest.raises(EnergyCompareError, match="non-finite"):
+        _parse_mvmc_zvo_out(str(path))
+
+
+def test_parse_mvmc_zvo_out_rejects_malformed_row(tmp_path):
+    path = tmp_path / "zvo_out_001.dat"
+    path.write_text("-1.25 invalid 0.0 0.0 0.0 0.0\n")
+    with pytest.raises(EnergyCompareError, match="numeric"):
+        _parse_mvmc_zvo_out(str(path))
+
+
 @pytest.mark.skip(
     reason="Phase 3 will regenerate a v1 case_pbc reference for this pin"
 )
@@ -120,7 +142,7 @@ def test_resolve_g3_paths_returns_canonical_paths(tmp_path):
     (hwave_dir / "energy.dat").write_text("Energy_Total = -1.0\n")
     mvmc_dir = tmp_path / "mvmc"
     mvmc_dir.mkdir()
-    (mvmc_dir / "zvo_out_selected.dat").write_text("-1.0 1.0 0 0\n")
+    (mvmc_dir / "zvo_out_selected.dat").write_text("-1.0 1.0 0 0 0 0\n")
     h_path, m_path = _resolve_g3_paths(str(tmp_path))
     assert h_path == str(hwave_dir / "energy.dat")
     assert m_path == str(mvmc_dir / "zvo_out_selected.dat")
@@ -130,7 +152,7 @@ def test_resolve_g3_paths_missing_hwave_energy(tmp_path):
     """Spec §5.6 pin 3: missing hwave/energy.dat raises with the documented message."""
     mvmc_dir = tmp_path / "mvmc"
     mvmc_dir.mkdir()
-    (mvmc_dir / "zvo_out_selected.dat").write_text("-1.0 1.0 0 0\n")
+    (mvmc_dir / "zvo_out_selected.dat").write_text("-1.0 1.0 0 0 0 0\n")
     with pytest.raises(FileNotFoundError, match="G3: missing .*energy.dat"):
         _resolve_g3_paths(str(tmp_path))
 
@@ -146,7 +168,7 @@ def test_resolve_g3_paths_missing_zvo_out_selected(tmp_path):
     mvmc_dir = tmp_path / "mvmc"
     mvmc_dir.mkdir()
     # Include a raw zvo_out_001.dat — resolver MUST NOT pick it up.
-    (mvmc_dir / "zvo_out_001.dat").write_text("-1.0 1.0 0 0\n")
+    (mvmc_dir / "zvo_out_001.dat").write_text("-1.0 1.0 0 0 0 0\n")
     with pytest.raises(
         FileNotFoundError, match="G3: missing.*zvo_out_selected.dat.*normalize"
     ):

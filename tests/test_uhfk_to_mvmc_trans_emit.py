@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir))
 
+from tools._uhfk_to_mvmc import trans_emit
 from tools._uhfk_to_mvmc.trans_emit import (
     TransEmitError,
     _unpack_soi,
@@ -186,7 +188,7 @@ def test_parse_hwave_transfer_skips_blank_and_comment_rows(tmp_path):
 
 def test_emit_trans_def_expands_all_sites(tmp_path):
     """2x2x1 lattice, 1 Transfer entry at R=(1,0,0), up->dn ->
-    4 rows (one per source site), each with i != j and s != t."""
+    4 rows (one per source site), each with i != j and swapped spins."""
     src = tmp_path / "Transfer.dat"
     out = tmp_path / "trans.def"
     # iWan = 1 (a=0, s=0=up), jWan = 2 (a=0, s=1=dn), val = +i (Rashba-like).
@@ -195,7 +197,7 @@ def test_emit_trans_def_expands_all_sites(tmp_path):
     data_rows = _read_trans_def_rows(str(out))
     assert len(data_rows) == 4  # one per source site
     for i, s, j, t, re, im in data_rows:
-        assert s == 0 and t == 1  # Rashba off-diagonal preserved
+        assert s == 1 and t == 0  # H-wave spin endpoints are swapped
         assert i != j
         # PBC: for source site (ix, iy, 0), target = ((ix+1) mod 2, iy, 0).
         Lx = 2
@@ -206,8 +208,10 @@ def test_emit_trans_def_expands_all_sites(tmp_path):
         assert (jx, jy) == ((ix + 1) % Lx, iy)
 
 
-def test_emit_trans_def_sign_flip_spin_diagonal(tmp_path):
-    """Spin-diagonal H-wave val=1.0 -> mVMC val=-1.0 (default sign_diag=-1)."""
+def test_emit_trans_def_spin_diagonal_preserves_minus_real_value(tmp_path):
+    """The derived rule reduces to the byte-verified ``-v`` for real
+    spin-diagonal entries because swapping equal spins is a no-op.
+    """
     src = tmp_path / "Transfer.dat"
     out = tmp_path / "trans.def"
     # 1x1x1 lattice, iWan=jWan=1 (spin-diagonal), val=+1.0.
@@ -220,58 +224,88 @@ def test_emit_trans_def_sign_flip_spin_diagonal(tmp_path):
     assert im == pytest.approx(0.0)
 
 
-def test_emit_trans_def_sign_diag_override_no_flip(tmp_path):
-    """sign_diag=+1.0 keeps the raw H-wave sign for spin-diagonal entries."""
+def test_emit_trans_def_spin_diagonal_conjugates_complex_value(tmp_path):
+    """Complex diagonal coefficients follow the same general ``-conj(v)`` rule."""
     src = tmp_path / "Transfer.dat"
     out = tmp_path / "trans.def"
-    _write_transfer(str(src), [(0, 0, 0, 1, 1, -1.0, 0.0)])
-    emit_trans_def(str(src), [1, 1, 1], str(out), sign_diag=1.0)
+    _write_transfer(str(src), [(0, 0, 0, 1, 1, 0.3, 0.4)])
+    emit_trans_def(str(src), [1, 1, 1], str(out))
     rows = _read_trans_def_rows(str(out))
-    _, _, _, _, re, im = rows[0]
-    assert re == pytest.approx(-1.0)
-    assert im == pytest.approx(0.0)
+    _, s, _, t, re, im = rows[0]
+    assert (s, t) == (0, 0)
+    assert complex(re, im) == pytest.approx(-0.3 + 0.4j)
 
 
-def test_emit_trans_def_no_sign_flip_spin_offdiagonal(tmp_path):
-    """Spin-off-diagonal (Rashba) entries pass through with sign_offdiag=+1
-    by default: H-wave +0.5i -> mVMC +0.5i (no flip). This is the fix that
-    brings case_soc_rashba_2d_nosub to 0.20% delta vs H-wave Energy_Total.
+def test_emit_trans_def_spin_symmetric_complex_soc_swaps_and_conjugates(
+    tmp_path,
+):
+    """A v3.7-shaped spin-symmetric SOC block exposes the old ``+v`` bug.
+
+    Both off-diagonal H-wave spin entries carry ``0.3+0.4j``. The general
+    mapping swaps the spin labels and emits ``-conj(v)``; the row order pins
+    which source Transfer entry produced each emitted row.
     """
     src = tmp_path / "Transfer.dat"
     out = tmp_path / "trans.def"
-    # 1x1x1 lattice, up->dn Rashba entry, val = +0.5i.
-    _write_transfer(str(src), [(0, 0, 0, 1, 2, 0.0, 0.5)])
+    value = 0.3 + 0.4j
+    _write_transfer(str(src), [
+        (0, 0, 1, 1, 2, value.real, value.imag),
+        (0, 0, 1, 2, 1, value.real, value.imag),
+    ])
     emit_trans_def(str(src), [1, 1, 1], str(out))
     rows = _read_trans_def_rows(str(out))
-    assert len(rows) == 1
-    _, s, _, t, re, im = rows[0]
-    assert s == 0 and t == 1
-    assert re == pytest.approx(0.0)
-    assert im == pytest.approx(+0.5)  # unchanged (no sign flip on Rashba)
+    assert len(rows) == 2
+    assert [(row[1], row[3]) for row in rows] == [(1, 0), (0, 1)]
+    emitted_values = [complex(row[4], row[5]) for row in rows]
+    assert emitted_values == pytest.approx([-value.conjugate()] * 2)
+    assert all(emitted != pytest.approx(value) for emitted in emitted_values), (
+        "v3.7 regression must differ from the old spin-preserving +v rule"
+    )
 
 
-def test_emit_trans_def_preserves_rashba_off_diagonal_spin(tmp_path):
-    """s != t rows survive the emitter: the Rashba pair up->dn / dn->up
-    at R=(+1,0,0) each produce one row per source site. Under the default
-    sign_offdiag=+1, Rashba values pass through unchanged."""
+def test_emit_trans_def_v36_rashba_matches_old_plus_v_matrix(tmp_path):
+    """The v3.6 x/y Rashba spin matrices hide the old rule's defect.
+
+    At fixed R they obey ``v[t,s] = -conj(v[s,t])``: the x pair has equal
+    imaginary entries and the y pair has antisymmetric real entries.
+    Therefore swapping spin endpoints and emitting ``-conj(v)`` produces
+    exactly the same matrix as the old spin-preserving ``+v`` rule.
+
+    This pins MATRIX equivalence only. Comparing dicts deliberately
+    discards row order and signed-zero formatting, because the emitted
+    text is NOT byte-identical to the old rule's: off-diagonal rows carry
+    swapped spin labels and the partner row supplies the transposed
+    entry. Byte stability across this change is not a contract; see the
+    module docstring in ``trans_emit.py``.
+    """
     src = tmp_path / "Transfer.dat"
     out = tmp_path / "trans.def"
-    _write_transfer(str(src), [
-        (1, 0, 0, 1, 2, 0.0, 0.5),   # up -> dn, +0.5i
-        (1, 0, 0, 2, 1, 0.0, 0.5),   # dn -> up, +0.5i
-    ])
-    emit_trans_def(str(src), [2, 1, 1], str(out))
+    transfer_rows = [
+        (1, 0, 0, 1, 2, 0.0, +0.5),  # +x: up -> down
+        (1, 0, 0, 2, 1, 0.0, +0.5),  # +x: down -> up
+        (0, 1, 0, 1, 2, -0.5, 0.0),  # +y: up -> down
+        (0, 1, 0, 2, 1, +0.5, 0.0),  # +y: down -> up
+    ]
+    _write_transfer(str(src), transfer_rows)
+    cell_shape = [2, 2, 1]
+    emit_trans_def(str(src), cell_shape, str(out))
     rows = _read_trans_def_rows(str(out))
-    # 2 entries * 2 source sites = 4 rows.
-    assert len(rows) == 4
-    up_dn = [r for r in rows if r[1] == 0 and r[3] == 1]
-    dn_up = [r for r in rows if r[1] == 1 and r[3] == 0]
-    assert len(up_dn) == 2
-    assert len(dn_up) == 2
-    # Default sign_offdiag=+1: Rashba values pass through unchanged.
-    for _, _, _, _, re, im in up_dn:
-        assert re == pytest.approx(0.0)
-        assert im == pytest.approx(+0.5)
+
+    new_matrix = {
+        (i, s, j, t): complex(re, im) for i, s, j, t, re, im in rows
+    }
+    old_plus_v_matrix = {}
+    Lx, Ly, _ = cell_shape
+    for rx, ry, _rz, i_wan, j_wan, re, im in transfer_rows:
+        for iy in range(Ly):
+            for ix in range(Lx):
+                i_site = ix + Lx * iy
+                j_site = (ix + rx) % Lx + Lx * ((iy + ry) % Ly)
+                old_plus_v_matrix[
+                    (i_site, i_wan - 1, j_site, j_wan - 1)
+                ] = complex(re, im)
+
+    assert new_matrix == pytest.approx(old_plus_v_matrix)
 
 
 def test_emit_trans_def_matches_vmcdry_format_prefix(tmp_path):
@@ -309,6 +343,36 @@ def test_emit_trans_def_rejects_bad_cell_shape(tmp_path):
         emit_trans_def(str(src), [4, 4], str(out))
 
 
+def test_validate_trans_def_entries_rejects_unsupported_orbital():
+    entries = [(0, 0, 0, 3, 1, 1.0 + 0.0j)]
+
+    with pytest.raises(TransEmitError, match="norb_orig == 1"):
+        trans_emit.validate_trans_def_entries(entries, [1, 1, 1])
+
+
+def test_validate_trans_def_entries_accepts_supported_entries():
+    entries = [
+        (1, 0, 0, 1, 2, -1.0 + 0.5j),
+        (-1, 0, 0, 2, 1, -1.0 - 0.5j),
+    ]
+
+    trans_emit.validate_trans_def_entries(entries, [4, 1, 1])
+
+
+def test_emit_trans_def_from_entries_materializes_generator(tmp_path):
+    entry = (0, 0, 0, 1, 1, 1.0 + 0.0j)
+    entries = (item for item in [entry])
+    out = tmp_path / "trans.def"
+
+    trans_emit.emit_trans_def_from_entries(
+        entries, [1, 1, 1], str(out),
+    )
+
+    lines = out.read_text().splitlines()
+    assert lines[1].split() == ["NTransfer", "1"]
+    assert len(lines[5:]) == 1
+
+
 def test_emit_trans_def_pbc_wraps_across_edge(tmp_path):
     """For a Lx=3 lattice with R=(1,0,0), ix=2 -> jx = (2+1) mod 3 = 0."""
     src = tmp_path / "Transfer.dat"
@@ -320,31 +384,6 @@ def test_emit_trans_def_pbc_wraps_across_edge(tmp_path):
     # Expect (i=0, j=1), (i=1, j=2), (i=2, j=0).
     pairs = sorted((r[0], r[2]) for r in rows)
     assert pairs == [(0, 1), (1, 2), (2, 0)]
-
-
-def test_sign_convention_is_pinned_at_diag_minus_offdiag_plus():
-    """Guard against silent sign-convention drift.
-
-    The mixed sign convention (sign_diag=-1, sign_offdiag=+1) is
-    empirically pinned via ComplexUHF verification at 4.4e-8% precision
-    on case_soc_rashba_2d_nosub. An earlier attempt to derive it from
-    H-wave's sc.py epsilon_k[orb2, orb1] swap does NOT apply because
-    uhfk.py:1143-1144 does not perform that swap. See trans_emit.py
-    module docstring for the empirical basis. This test reads the
-    module-level defaults so a code change to either flag surfaces
-    here rather than only via the E2E harness."""
-    from tools._uhfk_to_mvmc.trans_emit import (
-        DEFAULT_SIGN_DIAG,
-        DEFAULT_SIGN_OFFDIAG,
-    )
-    assert DEFAULT_SIGN_DIAG == -1.0, (
-        "sign_diag drifted from -1.0; verify E2E case_soc_rashba_2d_nosub "
-        "still passes at delta < 1% and update this test."
-    )
-    assert DEFAULT_SIGN_OFFDIAG == +1.0, (
-        "sign_offdiag drifted from +1.0; verify E2E case_soc_rashba_2d_nosub "
-        "still passes at delta < 1% and update this test."
-    )
 
 
 def _make_soc_fixture(tmp, *, transfer_body):
@@ -424,23 +463,345 @@ def _make_soc_fixture(tmp, *, transfer_body):
     return transfer_path
 
 
+def _run_soc_bridge(tmp_path):
+    """Run the product CLI against a fixture rooted at ``tmp_path``."""
+    return subprocess.run(
+        [
+            sys.executable, "tools/uhfk_to_mvmc.py",
+            "--input", str(tmp_path / "input.toml"),
+            "--eigen", str(tmp_path / "eigen.npz"),
+            "--occupation", str(tmp_path / "occupation.npz"),
+            "--geometry", str(tmp_path / "geometry_uhf.dat"),
+            "--orbitalidx", str(tmp_path / "orbitalidx.def"),
+            "--output", str(tmp_path / "zqp_orbital_uhfk.dat"),
+            "--no-check-density",
+            "--epsilon-noise", "0",
+            "--transfer", str(tmp_path / "Transfer.dat"),
+            "--emit-trans", str(tmp_path / "trans.def.bridge"),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _make_soc_sublattice_fixture(tmp_path, *, transfer_body=None):
+    """Copy the tracked v3.6 SOC + SubShape fixture into ``tmp_path``."""
+    fixture_dir = os.path.join(
+        REPO_ROOT,
+        "tests/validation/uhfk_mvmc_pairproduct/"
+        "case_soc_rashba_2d_sub_apbc",
+    )
+    data_dir = os.path.join(REPO_ROOT, "tests/data")
+    for name in ("input.toml", "geometry_uhf.dat"):
+        shutil.copyfile(
+            os.path.join(fixture_dir, name),
+            tmp_path / name,
+        )
+    shutil.copyfile(
+        os.path.join(data_dir, "v36_case_soc_rashba_2d_sub_apbc_eigen.npz"),
+        tmp_path / "eigen.npz",
+    )
+    shutil.copyfile(
+        os.path.join(
+            data_dir,
+            "v36_case_soc_rashba_2d_sub_apbc_occupation.npz",
+        ),
+        tmp_path / "occupation.npz",
+    )
+    if transfer_body is None:
+        shutil.copyfile(
+            os.path.join(fixture_dir, "Transfer.dat"),
+            tmp_path / "Transfer.dat",
+        )
+    else:
+        (tmp_path / "Transfer.dat").write_text(transfer_body)
+
+    # The source fixture's orbitalidx files are generated E2E artifacts and
+    # intentionally not tracked. The CLI only needs a valid General-format
+    # input here; SOC + SubShape replaces it with --emit-orbitalidx.
+    nsite = 24
+    total = nsite * (2 * nsite - 1)
+    lines = [
+        "======================",
+        f"NOrbitalIdx  {total}",
+        "ComplexType 1",
+        "======================",
+        "== i_spn_j_spn_OrbitalIdx ==",
+        "======================",
+    ]
+    idx = 0
+    for all_i in range(2 * nsite):
+        for all_j in range(all_i + 1, 2 * nsite):
+            i, spn_i = all_i % nsite, all_i // nsite
+            j, spn_j = all_j % nsite, all_j // nsite
+            lines.append(f"{i} {spn_i} {j} {spn_j} {idx} 1")
+            idx += 1
+    lines.extend(f"{idx} 1" for idx in range(total))
+    (tmp_path / "orbitalidx.def").write_text("\n".join(lines) + "\n")
+
+
+def _run_soc_sublattice_bridge(tmp_path, **path_overrides):
+    """Run all SOC + SubShape output producers against ``tmp_path``."""
+    paths = {
+        "input": tmp_path / "input.toml",
+        "eigen": tmp_path / "eigen.npz",
+        "occupation": tmp_path / "occupation.npz",
+        "geometry": tmp_path / "geometry_uhf.dat",
+        "orbitalidx": tmp_path / "orbitalidx.def",
+        "output": tmp_path / "zqp_orbital_uhfk.dat",
+        "transfer": tmp_path / "Transfer.dat",
+        "emit_trans": tmp_path / "trans.def.bridge",
+        "emit_orbitalidx": tmp_path / "orbitalidxgen.def.bridge",
+    }
+    paths.update(path_overrides)
+    return subprocess.run(
+        [
+            sys.executable, "tools/uhfk_to_mvmc.py",
+            "--input", str(paths["input"]),
+            "--eigen", str(paths["eigen"]),
+            "--occupation", str(paths["occupation"]),
+            "--geometry", str(paths["geometry"]),
+            "--orbitalidx", str(paths["orbitalidx"]),
+            "--output", str(paths["output"]),
+            "--no-check-density",
+            "--epsilon-noise", "0",
+            "--debug-writer",
+            "--transfer", str(paths["transfer"]),
+            "--emit-trans", str(paths["emit_trans"]),
+            "--emit-orbitalidx", str(paths["emit_orbitalidx"]),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "input_name",
+    [
+        "input.toml",
+        "eigen.npz",
+        "occupation.npz",
+        "geometry_uhf.dat",
+        "orbitalidx.def",
+        "Transfer.dat",
+    ],
+)
+def test_cli_rejects_emit_orbitalidx_matching_any_input(tmp_path, input_name):
+    """A requested output must never overwrite a direct CLI input."""
+    _make_soc_sublattice_fixture(tmp_path)
+    input_path = tmp_path / input_name
+    original = input_path.read_bytes()
+
+    result = _run_soc_sublattice_bridge(
+        tmp_path, emit_orbitalidx=input_path,
+    )
+
+    assert result.returncode == 2, result.stderr
+    assert "refusing to overwrite an input" in result.stderr
+    assert input_path.read_bytes() == original
+    for name in (
+        "F_pre_noise.npz",
+        "F_post_aggregate.npz",
+        "zqp_orbital_uhfk.dat",
+        "trans.def.bridge",
+    ):
+        assert not (tmp_path / name).exists(), f"unexpected output: {name}"
+
+
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_cli_rejects_emit_orbitalidx_aliasing_transfer_input(
+    tmp_path, alias_kind,
+):
+    """Existing symlink and hardlink aliases must not bypass preflight."""
+    _make_soc_sublattice_fixture(tmp_path)
+    transfer_path = tmp_path / "Transfer.dat"
+    alias_path = tmp_path / "transfer-alias.dat"
+    if alias_kind == "symlink":
+        alias_path.symlink_to(transfer_path)
+    else:
+        os.link(transfer_path, alias_path)
+    original = transfer_path.read_bytes()
+
+    result = _run_soc_sublattice_bridge(
+        tmp_path, emit_orbitalidx=alias_path,
+    )
+
+    assert result.returncode == 2, result.stderr
+    assert "refusing to overwrite an input" in result.stderr
+    assert transfer_path.read_bytes() == original
+
+
+def test_cli_rejects_colliding_outputs_before_writing(tmp_path):
+    """All active output destinations must be mutually distinct."""
+    _make_soc_sublattice_fixture(tmp_path)
+    shared_output = tmp_path / "shared-output.dat"
+
+    result = _run_soc_sublattice_bridge(
+        tmp_path,
+        output=shared_output,
+        emit_orbitalidx=shared_output,
+    )
+
+    assert result.returncode == 2, result.stderr
+    assert (
+        "output destinations resolve to the same path or file"
+        in result.stderr
+    )
+    for name in (
+        "shared-output.dat",
+        "F_pre_noise.npz",
+        "F_post_aggregate.npz",
+        "trans.def.bridge",
+    ):
+        assert not (tmp_path / name).exists(), f"unexpected output: {name}"
+
+
+def test_cli_rejects_debug_output_matching_input(tmp_path):
+    """The fixed --debug-writer paths participate in collision checks."""
+    _make_soc_sublattice_fixture(tmp_path)
+    eigen_path = tmp_path / "F_pre_noise.npz"
+    (tmp_path / "eigen.npz").replace(eigen_path)
+    original = eigen_path.read_bytes()
+
+    result = _run_soc_sublattice_bridge(tmp_path, eigen=eigen_path)
+
+    assert result.returncode == 2, result.stderr
+    assert "refusing to overwrite an input" in result.stderr
+    assert eigen_path.read_bytes() == original
+    for name in (
+        "F_post_aggregate.npz",
+        "orbitalidxgen.def.bridge",
+        "zqp_orbital_uhfk.dat",
+        "trans.def.bridge",
+    ):
+        assert not (tmp_path / name).exists(), f"unexpected output: {name}"
+
+
+def test_cli_validates_transfer_before_soc_sublattice_outputs(tmp_path):
+    """A rejected Transfer.dat must not overwrite any earlier producer."""
+    _make_soc_sublattice_fixture(
+        tmp_path,
+        transfer_body=(
+            "test header\n"
+            "1\n"
+            "1\n"
+            "1\n"
+            "  1 0 0 1 1  -1.0 0.0\n"
+        ),
+    )
+    sentinels = {
+        "orbitalidxgen.def.bridge": b"PREEXISTING_ORBITALIDX\n",
+        "F_pre_noise.npz": b"PREEXISTING_F_PRE\n",
+        "F_post_aggregate.npz": b"PREEXISTING_F_POST\n",
+    }
+    for name, content in sentinels.items():
+        (tmp_path / name).write_bytes(content)
+
+    result = _run_soc_sublattice_bridge(tmp_path)
+
+    assert result.returncode == 2, result.stderr
+    assert "ERROR (transfer_hermiticity)" in result.stderr
+    assert "missing partner" in result.stderr
+    for name, content in sentinels.items():
+        assert (tmp_path / name).read_bytes() == content, (
+            f"{name} was overwritten before Transfer.dat validation"
+        )
+    assert not (tmp_path / "zqp_orbital_uhfk.dat").exists()
+    assert not (tmp_path / "trans.def.bridge").exists()
+
+
+def test_cli_soc_sublattice_emits_all_requested_outputs(tmp_path):
+    """Hermitian input still produces orbital, debug, zqp, and trans files."""
+    _make_soc_sublattice_fixture(tmp_path)
+
+    result = _run_soc_sublattice_bridge(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    for name in (
+        "orbitalidxgen.def.bridge",
+        "F_pre_noise.npz",
+        "F_post_aggregate.npz",
+        "zqp_orbital_uhfk.dat",
+        "trans.def.bridge",
+    ):
+        assert (tmp_path / name).is_file(), f"missing output: {name}"
+
+
+def test_cli_rejects_nonhermitian_transfer_without_final_outputs(tmp_path):
+    """The product CLI must fail closed before emitting the bridge pair."""
+    _make_soc_fixture(
+        str(tmp_path),
+        transfer_body=(
+            "test header\n"
+            "1\n"
+            "1\n"
+            "1\n"
+            "  1 0 0 1 1  -1.0 0.0\n"
+        ),
+    )
+
+    result = _run_soc_bridge(tmp_path)
+
+    assert result.returncode == 2, result.stderr
+    assert "ERROR (transfer_hermiticity)" in result.stderr
+    assert "missing partner" in result.stderr
+    assert not (tmp_path / "zqp_orbital_uhfk.dat").exists()
+    assert not (tmp_path / "trans.def.bridge").exists()
+
+
+def test_cli_rejects_empty_transfer_without_final_outputs(tmp_path):
+    """A bridge output with no transfer terms is not a valid product."""
+    _make_soc_fixture(
+        str(tmp_path),
+        transfer_body="test header\n1\n0\n",
+    )
+
+    result = _run_soc_bridge(tmp_path)
+
+    assert result.returncode == 2, result.stderr
+    assert "ERROR (transfer_hermiticity)" in result.stderr
+    assert "bridge output requires at least one transfer term" in result.stderr
+    assert not (tmp_path / "zqp_orbital_uhfk.dat").exists()
+    assert not (tmp_path / "trans.def.bridge").exists()
+
+
+def test_cli_accepts_hermitian_transfer(tmp_path):
+    """A valid Hermitian pair continues through both bridge outputs."""
+    _make_soc_fixture(
+        str(tmp_path),
+        transfer_body=(
+            "test header\n"
+            "1\n"
+            "2\n"
+            "1 1\n"
+            "  1 0 0 1 1  -1.0 0.0\n"
+            " -1 0 0 1 1  -1.0 0.0\n"
+        ),
+    )
+
+    result = _run_soc_bridge(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "zqp_orbital_uhfk.dat").is_file()
+    assert (tmp_path / "trans.def.bridge").is_file()
+
+
 def test_atomic_output_no_partial_state_on_failure(tmp_path):
-    """Codex adversarial review (Rev.1, finding 3): a malformed
-    Transfer.dat under SOC must not leave a stale
-    ``zqp_orbital_uhfk.dat`` or overwrite a pre-existing ``trans.def``
-    on disk. Pre-existing output files at the destinations survive the
-    failed call.
+    """An unsupported SOC orbital must fail before any requested output.
+
+    Pre-existing zqp, trans, and debug artifacts all survive the failed call.
     """
     tmp = str(tmp_path)
-    # Malformed Transfer.dat: header + num_wann + nr=1 + ndegen row, but
-    # data row has only 6 columns (missing the imaginary part). The
-    # parser raises TransEmitError with "expected 7 columns".
+    # This real same-index on-site term passes Hermiticity, but iWan=jWan=3
+    # decodes to physical orbital 1, outside v3.1's single-orbital scope.
     transfer_body = (
         "test header\n"
+        "3\n"
         "1\n"
         "1\n"
-        "1\n"
-        "  0 0 0 1 1  0.5\n"
+        "  0 0 0 3 3  0.5 0.0\n"
     )
     _make_soc_fixture(tmp, transfer_body=transfer_body)
 
@@ -449,10 +810,14 @@ def test_atomic_output_no_partial_state_on_failure(tmp_path):
     # Pre-existing sentinel files at the two output destinations.
     sentinel_zqp = b"PREEXISTING_ZQP_CONTENT\n"
     sentinel_trans = b"PREEXISTING_TRANS_CONTENT\n"
+    sentinel_f_pre = b"PREEXISTING_F_PRE\n"
+    sentinel_f_post = b"PREEXISTING_F_POST\n"
     with open(zqp_path, "wb") as fp:
         fp.write(sentinel_zqp)
     with open(trans_path, "wb") as fp:
         fp.write(sentinel_trans)
+    (tmp_path / "F_pre_noise.npz").write_bytes(sentinel_f_pre)
+    (tmp_path / "F_post_aggregate.npz").write_bytes(sentinel_f_post)
 
     result = subprocess.run(
         [
@@ -465,6 +830,7 @@ def test_atomic_output_no_partial_state_on_failure(tmp_path):
             "--output", zqp_path,
             "--no-check-density",
             "--epsilon-noise", "0",
+            "--debug-writer",
             "--transfer", os.path.join(tmp, "Transfer.dat"),
             "--emit-trans", trans_path,
         ],
@@ -481,12 +847,75 @@ def test_atomic_output_no_partial_state_on_failure(tmp_path):
         assert fp.read() == sentinel_trans, (
             "trans.def corrupted despite SOC emit failure"
         )
-    # No stray .tmp file left behind in the output dir.
+    assert (tmp_path / "F_pre_noise.npz").read_bytes() == sentinel_f_pre
+    assert (tmp_path / "F_post_aggregate.npz").read_bytes() == sentinel_f_post
+    # This rejection happens during preflight, so the absence of temps here
+    # confirms that preflight did not enter the atomic-write transaction.
     stray = [
         n for n in os.listdir(tmp)
         if n.startswith(".uhfk_to_mvmc.") and n.endswith(".tmp")
     ]
-    assert stray == [], f"stray tmp files not cleaned up: {stray}"
+    assert stray == [], f"preflight unexpectedly created temps: {stray}"
+
+
+def test_atomic_output_cleans_created_temps_when_replace_fails(
+    tmp_path, monkeypatch,
+):
+    """A post-mkstemp commit fault cleans temps and preserves outputs."""
+    from tools import uhfk_to_mvmc
+
+    transfer_body = (
+        "test header\n"
+        "1\n"
+        "2\n"
+        "1 1\n"
+        "  1 0 0 1 1  -1.0 0.0\n"
+        " -1 0 0 1 1  -1.0 0.0\n"
+    )
+    _make_soc_fixture(str(tmp_path), transfer_body=transfer_body)
+    zqp_path = tmp_path / "zqp_orbital_uhfk.dat"
+    trans_path = tmp_path / "trans.def.bridge"
+    sentinel_zqp = b"PREEXISTING_ZQP_CONTENT\n"
+    sentinel_trans = b"PREEXISTING_TRANS_CONTENT\n"
+    zqp_path.write_bytes(sentinel_zqp)
+    trans_path.write_bytes(sentinel_trans)
+
+    created_temps = []
+    real_mkstemp = tempfile.mkstemp
+
+    def recording_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        created_temps.append(path)
+        return fd, path
+
+    def fail_replace(_source, _destination):
+        raise OSError("injected os.replace failure")
+
+    monkeypatch.setattr(
+        uhfk_to_mvmc.tempfile, "mkstemp", recording_mkstemp,
+    )
+    monkeypatch.setattr(uhfk_to_mvmc.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="injected os.replace failure"):
+        uhfk_to_mvmc.main(
+            [
+                "--input", str(tmp_path / "input.toml"),
+                "--eigen", str(tmp_path / "eigen.npz"),
+                "--occupation", str(tmp_path / "occupation.npz"),
+                "--geometry", str(tmp_path / "geometry_uhf.dat"),
+                "--orbitalidx", str(tmp_path / "orbitalidx.def"),
+                "--output", str(zqp_path),
+                "--no-check-density",
+                "--epsilon-noise", "0",
+                "--transfer", str(tmp_path / "Transfer.dat"),
+                "--emit-trans", str(trans_path),
+            ]
+        )
+
+    assert len(created_temps) == 2
+    assert all(not os.path.exists(path) for path in created_temps)
+    assert zqp_path.read_bytes() == sentinel_zqp
+    assert trans_path.read_bytes() == sentinel_trans
 
 
 def _read_trans_def_rows(path):
@@ -541,7 +970,7 @@ def test_emit_trans_def_apbc_flips_sign_for_boundary_crossing_spin_diag(
 ):
     """1D L=4 lattice, R=(1,0,0), spin-diagonal T=-1.0 under APBC(x).
     Interior bonds (ix in {0, 1, 2}) emit mVMC trans.def with the
-    default sign_diag=-1 flip alone (physical hop -> trans = +1.0).
+    spin-diagonal reduction ``-conj(T) = +1.0`` alone.
     The boundary bond (ix=3, jx=0) additionally acquires the AP wrap
     sign (-1), so its emitted trans value is -1.0. Matches the sign
     pattern StdFace bakes into vmcdry's trans.def under phase0 = 180
@@ -556,7 +985,7 @@ def test_emit_trans_def_apbc_flips_sign_for_boundary_crossing_spin_diag(
     )
     rows = _read_trans_def_rows(str(out))
     assert len(rows) == 4
-    # Row tuple layout: (source_flat, s_src, target_flat, s_tgt, re, im).
+    # Row tuple layout after mapping: (i_site, s_tgt, j_site, s_src, re, im).
     # Key by source flat index.
     by_source = {r[0]: r for r in rows}
     # ix=0 -> jx=1 (interior): trans = -T_hwave * wrap(=1) = +1
@@ -589,7 +1018,7 @@ def test_emit_trans_def_apbc_flips_sign_for_boundary_crossing_negative_R(
     )
     rows = _read_trans_def_rows(str(out))
     assert len(rows) == 4
-    # Row tuple layout: (source_flat, s_src, target_flat, s_tgt, re, im).
+    # Row tuple layout after mapping: (i_site, s_tgt, j_site, s_src, re, im).
     by_source = {r[0]: r for r in rows}
     # ix=0 -> jx=3 (boundary, wraps once negatively): trans = -T * (-1) = -1
     assert by_source[0][2] == 3
@@ -609,9 +1038,8 @@ def test_emit_trans_def_apbc_flips_sign_on_rashba_off_diagonal(tmp_path):
     """Rashba s != t entries also acquire the AP wrap sign at boundary
     crossings. Under APBC(x), a hop with val = +0.5i (up -> dn) at
     R = (1, 0, 0) becomes -0.5i on the boundary-crossing source
-    (ix = Lx-1 -> jx = 0). Sign convention: sign_offdiag = +1 keeps
-    the raw H-wave value on interior bonds; wrap phase (-1) flips it
-    on boundary bonds.
+    (ix = Lx-1 -> jx = 0). The general rule swaps it to dn -> up and
+    gives ``-conj(+0.5i) = +0.5i`` before the wrap phase is applied.
     """
     src = tmp_path / "Transfer.dat"
     out = tmp_path / "trans.def"
@@ -622,17 +1050,17 @@ def test_emit_trans_def_apbc_flips_sign_on_rashba_off_diagonal(tmp_path):
     )
     rows = _read_trans_def_rows(str(out))
     assert len(rows) == 4
-    # Row tuple layout: (source_flat, s_src, target_flat, s_tgt, re, im).
+    # Row tuple layout after mapping: (i_site, s_tgt, j_site, s_src, re, im).
     by_source = {r[0]: r for r in rows}
     # ix=0..2 (interior): (re, im) = (0, +0.5)
     for ix in (0, 1, 2):
         _, s, _, t, re, im = by_source[ix]
-        assert s == 0 and t == 1
+        assert s == 1 and t == 0
         assert re == pytest.approx(0.0)
         assert im == pytest.approx(+0.5)
     # ix=3 (boundary): sign-flipped to (0, -0.5)
     _, s, _, t, re, im = by_source[3]
-    assert s == 0 and t == 1
+    assert s == 1 and t == 0
     assert re == pytest.approx(0.0)
     assert im == pytest.approx(-0.5)
 

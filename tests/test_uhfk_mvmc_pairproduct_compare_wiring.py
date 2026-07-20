@@ -19,6 +19,7 @@ import os
 import sys
 import types
 
+import numpy as np
 import pytest
 
 
@@ -246,6 +247,161 @@ def test_compare_composite_gate_g2a_emitted_F_missing_helper_exits_2(
 
 
 # ---------------------------------------------------------------------
+# Numerical gate failures must fail closed on invalid comparison inputs.
+# ---------------------------------------------------------------------
+
+
+def _run_g0_writer_check(compare_mod, tmp_path, emitted, reference, gtol):
+    bridge = tmp_path / "bridge_zeronoise"
+    bridge.mkdir(exist_ok=True)
+    np.savez(bridge / "F_pre_noise.npz", F=np.asarray(reference))
+
+    def parse_emitted_F(_path):
+        return np.asarray(emitted)
+
+    return compare_mod._dispatch_g0_writer_check(
+        str(tmp_path), (parse_emitted_F,), gtol
+    )
+
+
+@pytest.mark.parametrize(
+    ("emitted", "reference"),
+    [([np.nan], [0.0]), ([0.0], [np.nan])],
+)
+def test_g0_writer_check_rejects_non_finite_array(
+    compare_mod, tmp_path, capsys, emitted, reference
+):
+    rc = _run_g0_writer_check(
+        compare_mod, tmp_path, emitted, reference, 1.0e-10
+    )
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "G0-writer-check PASS" not in captured.out
+    assert "non-finite" in captured.err
+
+
+@pytest.mark.parametrize("gtol", [np.nan, np.inf, -np.inf, 0.0, -1.0])
+def test_g0_writer_check_rejects_invalid_gtol(
+    compare_mod, tmp_path, capsys, gtol
+):
+    rc = _run_g0_writer_check(
+        compare_mod, tmp_path, [1.0], [0.0], gtol
+    )
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "G0-writer-check PASS" not in captured.out
+    assert "tolerance" in captured.err
+
+
+def test_g0_writer_check_normal_match_passes(compare_mod, tmp_path, capsys):
+    rc = _run_g0_writer_check(
+        compare_mod, tmp_path, [0.0], [0.0], 1.0e-10
+    )
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "G0-writer-check PASS" in captured.out
+
+
+def test_g0_writer_check_normal_mismatch_fails(compare_mod, tmp_path, capsys):
+    rc = _run_g0_writer_check(
+        compare_mod, tmp_path, [1.0], [0.0], 1.0e-10
+    )
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "G0-writer-check PASS" not in captured.out
+
+
+def test_g0_writer_check_rejects_non_finite_computed_delta(
+    compare_mod, tmp_path, capsys
+):
+    largest = np.finfo(np.float64).max
+    with np.errstate(over="ignore"):
+        rc = _run_g0_writer_check(
+            compare_mod, tmp_path, [largest], [-largest], 1.0e-10
+        )
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "G0-writer-check PASS" not in captured.out
+    assert "max absolute delta is non-finite" in captured.err
+
+
+def _run_g1(
+    compare_mod, tmp_path, monkeypatch, shipping_orbitals, lifted_density, gtol
+):
+    monkeypatch.setattr(compare_mod, "_load_workspace_config", lambda _path: {})
+    monkeypatch.setattr(
+        compare_mod,
+        "_build_shipping_A",
+        lambda _workspace, _cfg: (np.asarray(shipping_orbitals), None),
+    )
+    monkeypatch.setattr(
+        compare_mod,
+        "_build_G_from_gauge_lift",
+        lambda _workspace, _cfg, _gauge_lift: np.asarray(lifted_density),
+    )
+    return compare_mod._dispatch_g1(
+        str(tmp_path), (object(), object()), gtol
+    )
+
+
+@pytest.mark.parametrize(
+    ("shipping_orbitals", "lifted_density"),
+    [([[np.nan]], [[0.0]]), ([[0.0]], [[np.nan]])],
+)
+def test_g1_rejects_non_finite_array(
+    compare_mod,
+    tmp_path,
+    monkeypatch,
+    capsys,
+    shipping_orbitals,
+    lifted_density,
+):
+    rc = _run_g1(
+        compare_mod,
+        tmp_path,
+        monkeypatch,
+        shipping_orbitals,
+        lifted_density,
+        1.0e-10,
+    )
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "G1 PASS" not in captured.out
+    assert "non-finite" in captured.err
+
+
+@pytest.mark.parametrize("gtol", [np.nan, np.inf, -np.inf, 0.0, -1.0])
+def test_g1_rejects_invalid_gtol(
+    compare_mod, tmp_path, monkeypatch, capsys, gtol
+):
+    rc = _run_g1(
+        compare_mod, tmp_path, monkeypatch, [[1.0]], [[0.0]], gtol
+    )
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "G1 PASS" not in captured.out
+    assert "tolerance" in captured.err
+
+
+def test_g1_normal_match_passes(compare_mod, tmp_path, monkeypatch, capsys):
+    rc = _run_g1(
+        compare_mod, tmp_path, monkeypatch, [[1.0]], [[1.0]], 1.0e-10
+    )
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "G1 PASS" in captured.out
+
+
+def test_g1_normal_mismatch_fails(compare_mod, tmp_path, monkeypatch, capsys):
+    rc = _run_g1(
+        compare_mod, tmp_path, monkeypatch, [[1.0]], [[0.0]], 1.0e-10
+    )
+    captured = capsys.readouterr()
+    assert rc != 0
+    assert "G1 PASS" not in captured.out
+
+
+# ---------------------------------------------------------------------
 # metadata-preserving monkey-patch verifies dispatch actually calls the
 # canonical helper.
 # ---------------------------------------------------------------------
@@ -288,6 +444,16 @@ def _write_minimal_g2b_workspace(root, Ns=2):
     # content does not matter beyond having the right shape and dtype.
     green_sub = np.zeros((2, 1, 4, 1, 4), dtype=np.complex128)
     np.savez(hwave / "green.npz", green_sublattice=green_sub)
+    # G2 contraction precondition: start clearly outside the default
+    # 1e-6 tolerance, then use the all-zero converged artifact below.
+    (complexuhf / "initial.def").write_text(
+        "=============================================\n"
+        "NInitial          1\n"
+        "=============================================\n"
+        "=============================================\n"
+        "=============================================\n"
+        "0 0 0 0 1.0e-3 0.0\n"
+    )
     # ComplexUHF density (all zeros, matches the sentinel's zero
     # output). The strict Codex re-review 2026-07-12 parser requires
     # exactly (2*Ns)^2 = 16 (i, s, j, t) rows for Ns = 2.
@@ -357,7 +523,9 @@ def test_compare_g3_invokes_canonical_energy_relative_delta(
     (hwave_dir / "energy.dat").write_text("Energy_Total = -1.0\n")
     mvmc_dir = tmp_path / "mvmc"
     mvmc_dir.mkdir()
-    (mvmc_dir / "zvo_out_selected.dat").write_text("-1.0 1.0 0 0\n")
+    (mvmc_dir / "zvo_out_selected.dat").write_text(
+        "-1.0 1.0 0 0 0 0\n"
+    )
 
     from tools._uhfk_to_mvmc import energy_compare
 
@@ -386,6 +554,61 @@ def test_compare_g3_invokes_canonical_energy_relative_delta(
     )
 
 
+@pytest.mark.parametrize(
+    ("zvo_row", "diagnostic"),
+    [
+        ("-1.25\n", "expected exactly 6 columns"),
+        ("-1.25 nan 0 0 0 0\n", "non-finite"),
+    ],
+)
+def test_compare_g3_rejects_invalid_zvo_row(
+    compare_mod, tmp_path, capsys, zvo_row, diagnostic
+):
+    hwave_dir = tmp_path / "hwave"
+    hwave_dir.mkdir()
+    (hwave_dir / "energy.dat").write_text("Energy_Total = -1.25\n")
+    mvmc_dir = tmp_path / "mvmc"
+    mvmc_dir.mkdir()
+    (mvmc_dir / "zvo_out_selected.dat").write_text(zvo_row)
+
+    exit_code = compare_mod.main(
+        ["compare.py", "--workspace", str(tmp_path), "--mode", "g3"],
+    )
+    captured = capsys.readouterr()
+    assert exit_code != 0
+    assert "G3 PASS" not in captured.out
+    assert diagnostic in captured.err
+
+
+@pytest.mark.parametrize("bad_sample", ["nan", "inf", "-inf"])
+def test_compare_g3_rejects_non_finite_mvmc_energy(
+    compare_mod, tmp_path, capsys, bad_sample
+):
+    """A non-finite mVMC sample must fail G3, not pass it.
+
+    `nan > tol` is False, so before the finiteness guard a NaN sailed
+    through to the anchored PASS record and silently disabled the only
+    H-wave/mVMC energy-agreement gate. run.sh accepts that record by
+    prefix alone, so nothing downstream would have caught it.
+    """
+    hwave_dir = tmp_path / "hwave"
+    hwave_dir.mkdir()
+    (hwave_dir / "energy.dat").write_text("Energy_Total = -1.0\n")
+    mvmc_dir = tmp_path / "mvmc"
+    mvmc_dir.mkdir()
+    (mvmc_dir / "zvo_out_selected.dat").write_text(
+        f"{bad_sample} 1.0 0 0 0 0\n"
+    )
+
+    exit_code = compare_mod.main(
+        ["compare.py", "--workspace", str(tmp_path), "--mode", "g3"],
+    )
+    captured = capsys.readouterr()
+    assert exit_code != 0
+    assert "G3 PASS" not in captured.out
+    assert "non-finite" in captured.err
+
+
 # ---------------------------------------------------------------------
 # CLI edge cases.
 # ---------------------------------------------------------------------
@@ -397,7 +620,7 @@ def test_legacy_positional_args_still_work(compare_mod, tmp_path, capsys):
     hwave = tmp_path / "energy.dat"
     hwave.write_text("Energy_Total = -1.0\n")
     mvmc = tmp_path / "zvo_out_001.dat"
-    mvmc.write_text("-1.0 1.0 0 0\n")
+    mvmc.write_text("-1.0 1.0 0 0 0 0\n")
     rc = compare_mod.main(
         ["compare.py", str(hwave), str(mvmc), "unit_test_case"],
     )

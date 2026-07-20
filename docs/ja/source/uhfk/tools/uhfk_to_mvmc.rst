@@ -148,24 +148,13 @@ mVMC の PairProduct 状態を H-wave UHF の Slater 行列で初期化できる
   ``Ncond = 8``) 上で 1e-10 を通過する。
 
 - **多方向 APBC (n_apbc_dirs >= 2) + SOC + SubShape > [1, 1, 1]**
-  は引き続き pre-dispatch で reject する。CLI reject メッセージ::
-
-      ERROR: enable_spin_orbital = true + multi-direction APBC
-      (n_apbc_dirs=<count>) + SubShape > [1, 1, 1] is deferred to v3.7.
-      Single-direction APBC + SOC + SubShape > 1 is supported in v3.6 as
-      of case_soc_rashba_2d_sub_apbc.
-
-  Phase 6 の dispatch 述語::
-
-      n_apbc_dirs = sum(1 for t in theta if abs(t - pi) < 1e-12
-                                       or abs(t + pi) < 1e-12)
-      if is_soc_mode and n_apbc_dirs > 1 and any(s != 1 for s in sub_shape):
-          return 2
-
-  多方向 APBC + SubShape > 1 の合成 twist gauge は第一原理からの
-  導出が E2E fixture 上で未検証 (``case_soc_rashba_2d_sub_apbc_apbc``
-  相当は v3.6 tree に無い)。誤った ``trans.def`` / shipping A を
-  silent に生成することを避けるため fail-fast で reject する。
+  は v3.6 では pre-dispatch で reject していた。多方向 APBC +
+  SubShape > 1 の合成 twist gauge が E2E fixture 上で未検証であり、
+  誤った ``trans.def`` / shipping A を silent に生成することを避ける
+  ための fail-fast であった。**v3.7 で解消**: v3.6 の reject
+  メッセージと ``n_apbc_dirs > 1`` 述語は現在の tree に存在しない。
+  v3.7 は検証済みの多方向 fixture を 4 つ同梱し、両者を後述の
+  スコープ (v3.7) の allowlist 述語で置き換えている。
 
 - **v3.6 七 gate 契約** (fresh workspace ``case_soc_rashba_2d_sub_apbc``
   で全 gate が PASS)::
@@ -211,12 +200,16 @@ mVMC の PairProduct 状態を H-wave UHF の Slater 行列で初期化できる
     生じた。修正: ``scripts/seed_complexuhf_from_hwave.py`` が
     H-wave の shipping A 密度を ComplexUHF ``initial.def`` (
     ``IgnoreLinesInDef=5`` 規約に沿った 5 行 header) に書き出し、微小な
-    Hermitian ``perturb-scale`` (このフィクスチャでは 1e-6) を付与
-    することで ComplexUHF を実際に反復させる (``run.sh`` が
-    ``uhf.log`` の ``finished at N step`` を awk parse し N >= 1 を強制)
-    が H-wave の basin を離脱しない範囲に留める。seeding 後の
-    ComplexUHF は 9 SCF steps 走り ``Energy_Total = -25.3717166``
-    (H-wave と 10 桁一致) に収束する。
+    Hermitian ``perturb-scale`` を付与することで ComplexUHF を実際に
+    反復させるが、H-wave の basin を離脱しない範囲に留める。
+    本節が当初記載していた値 (``perturb-scale`` 1e-6、9 SCF steps、
+    ``Energy_Total = -25.3717166``) は既に古い。1e-6 は G2 の許容値と
+    同値であり、seed をそのまま返すソルバでも G2 を通過できてしまった。
+    現在このフィクスチャは ``flag_fock = true`` のもと
+    ``perturb-scale`` 1e-3 で走り、ComplexUHF は 70 SCF steps で
+    ``Energy_Total = -25.390269883203`` に収束する。旧来の
+    「SCF が 1 step 以上走ったこと」の表明を置き換えた収縮要件に
+    ついては、上記スコープ (v3.7) を参照。
 
   * **Snapshot workspace rejection**: snapshot guard が ``tests/data``
     をプロセス CWD 基準で resolve していたため、リポジトリ外から起動
@@ -248,6 +241,158 @@ mVMC の PairProduct 状態を H-wave UHF の Slater 行列で初期化できる
   (`tests/test_uhfk_mvmc_pairproduct_compare_wiring.py`)、
   CWD-independent snapshot guard に 3 tests
   (`tests/test_snapshot_rejection_guard_v36.py`)。
+
+スコープ (v3.7)
+^^^^^^^^^^^^^^^
+
+- **SOC + 多方向 APBC + SubShape > [1, 1, 1]** を v3.7 でサポートする。
+  対象は ``CellShape = [4, 4, 4]`` / ``SubShape = [2, 2, 2]``
+  (folded BZ ``[2, 2, 2]``、物理サイト 64、スピン軌道次元 128) 上の
+  xy / yz / xz / xyz の 4 つの活性方向マスク。shipping fixture は
+  4 つで、いずれも xy 面内 Rashba ``alpha = 0.5``、スピン対角な z
+  方向ホッピング ``t_z = -1``、係数 ``0.3 + 0.4j`` の一般的な複素 z
+  方向スピン混合ホッピング、``U = 2`` を持つ::
+
+      case_soc_rashba_3d_sub_apbc_xy    AP  AP  P    Ncond = 20
+      case_soc_rashba_3d_sub_apbc_xz    AP  P   AP   Ncond = 20
+      case_soc_rashba_3d_sub_apbc_yz    P   AP  AP   Ncond = 24
+      case_soc_rashba_3d_sub_apbc_xyz   AP  AP  AP   Ncond = 12
+
+  z 方向スピン混合ブロックは Rashba SOC ではない。
+  ``H_z(k_z) = (0.6 cos(k_z) - 0.8 sin(k_z)) sigma_x`` となり、偶関数成分
+  ``0.6 cos(k_z)`` がスピン 1/2 の時間反転対称性を破るためである。
+  ホッピング全体は Hermitian のままであるため、これらの fixture は
+  写像の検証に有効であり、一般的な複素ホッピングも検査できる。
+  時間反転対称な 3D SOC fixture は v3.8 の follow-up とする。
+
+  ``Ncond`` は fixture 間で一様ではない。各 fixture は、自身の収束
+  スペクトル上で ``>= 5e-2`` の HOMO-LUMO gap と ``build_pair_list``
+  の partner-balance 不変条件 ``n_occ(k) == n_occ(partner(k))`` を
+  ともに満たす充填に pin されている。スカラーの gap 判定だけでは
+  不十分である。gap は canonical/partner 対の 2 行に占有状態が
+  どう分配されるかについて何も語らないためである。候補ごとの
+  完全なスキャン結果は各 fixture の ``README.md`` に記録している。
+
+- **``flag_fock = true`` が必須** であり、任意設定ではない。検証用
+  バイナリ ``ComplexUHF`` はオンサイト交換項をコンパイル時に固定
+  しており (``src/ComplexUHF/include/Def.h`` の ``#define Fock 1``)、
+  実行時スイッチを持たない。したがって ``flag_fock = false`` の
+  H-wave 実行は、比較対象のソルバとは異なる平均場汎関数を最小化
+  することになる。この不整合は、収束後のオンサイト横スピン密度が
+  無視できる場合は顕在化しない (v3.6 fixture では 8.6e-17)。しかし
+  v3.7 の z-SOC ブロックはこの密度を 2.7e-2 まで押し上げるため、
+  Hartree のみの H-wave 解は ComplexUHF のいかなる不動点からも
+  3.1e-3 離れる。これは G2a 許容値の 3000 倍であり、seed の選び方
+  では到達できない。
+
+- **``trans.def`` のスピン非対角写像**。Transfer.dat のエントリ
+  ``(R, s, t, v)`` に対し、bridge はスピン端点を入れ替え、係数を
+  共役かつ符号反転して出力する::
+
+      K[i, t; i+R, s]     = conj(v)
+      trans[i, t; i+R, s] = -conj(v)
+
+  サイト端点は変わらない。実数のスピン対角成分では入れ替えが
+  no-op となり、規則は ``trans = -v`` に帰着する。v3.6 の x/y
+  Rashba 行列は固定 ``R`` において ``v[t,s] = -conj(v[s,t])`` を
+  満たし、これは本規則と従来の非対角規則 ``trans = +v`` が同一の
+  行列を出力する条件そのものであるため、v3.6 の結果は影響を
+  受けない。v3.7 の z-SOC ブロックはスピン対称かつ実部・虚部を
+  ともに持ち、この条件を満たさない。これが一般規則を必要とした
+  理由である。境界の wrap 位相は共役の後に適用する。同梱の
+  fixture はすべて ``theta`` 成分が ``{0, pi}`` であり、この位相は
+  実数である。一般の複素 twist は対象外であり未検証である。
+
+- **v3.7 allowlist**。SOC かつ APBC 方向を持つ ``SubShape > [1, 1, 1]``
+  の組み合わせは、``tools/_uhfk_to_mvmc/allowlist_predicate.py`` の
+  明示的な allowlist で検査する。CLI と静的カバレッジ checker が
+  この述語を共有するため、両者が乖離することはない::
+
+      _V37_ALLOWED_APBC_MASKS = {(1,1,0), (1,0,1), (0,1,1), (1,1,1)}
+      _V37_LATTICE            = ((2,2,2), (4,4,4))   # sub_shape, cell_shape
+      _V36_ALLOWED_APBC_MASKS = {(1,0,0), (0,1,0), (0,0,1)}
+      _V36_LATTICE            = ((2,2,1), (6,4,1))
+
+  非 SOC、``SubShape = [1, 1, 1]``、SOC かつ全方向周期境界の場合は
+  early-return でサポート扱いとなる。それ以外で allowlist に無いもの
+  は dispatch 前に以下のメッセージで reject される::
+
+      ERROR: SOC + APBC + SubShape combination not in the v3.7
+      allowlist. Supported active-direction masks + shapes: (a) v3.6
+      single-dir APBC on CellShape=[6,4,1]/SubShape=[2,2,1]; (b) v3.7
+      xy/xz/yz/xyz APBC on CellShape=[4,4,4]/SubShape=[2,2,2]. Others
+      are deferred; add a new fixture + gate validation before
+      expanding the allowlist.
+
+- **v3.7 七 gate 契約**: スコープ (v3.6) に挙げた 7 つの gate を
+  4 fixture それぞれで実行し、計 28 個の anchored PASS 記録を得る。
+  fresh workspace における 4 fixture 中の最悪値::
+
+      G0-writer-check    4.16e-17   tol 1e-10
+      G1                 3.41e-13   tol 1e-10
+      G2a-emitted-F      1.59e-07   tol 1e-06
+      G2a-in-memory-A    1.55e-07   tol 1e-06
+      G2b                1.55e-07   tol 1e-06
+      G3                 4.49e-04   tol 1e-02
+      G4                 0.00e+00   tol 2e-01
+
+- **G2 は一致するだけでなく収縮しなければならない**。ComplexUHF は
+  H-wave の収束密度から seed される。これは両ソルバを同じ対称性の
+  破れた極小に収めるためだが、比較を循環させる危険がある。seed が
+  既に許容値を満たしていれば、それをそのまま返すソルバでも通過して
+  しまうためである。そこで各 G2 は、seed 時点で基準から少なくとも
+  ``10 * tol`` 離れていることと、収束後に ``tol`` の内側に入ることの
+  両方を要求し、双方と収縮率を記録する::
+
+      G2b PASS ... initial_delta=5.037430e-04 final_delta=2.705664e-08
+                   contraction_ratio=5.371120e-05
+
+  この要件は G2 を走らせる全 fixture に例外なく適用される。また
+  比較の前に非有限値を拒否する。NaN の差分は両方の境界比較を False に
+  してしまい、そのままでは素通りするためである。
+
+  これが可能なのは、v3.6 と v3.7 の shipping fixture がいずれも
+  ``flag_fock = true`` になったからである。使用可能な seed の窓が
+  そもそも存在するかは汎関数に依存する。H-wave と ComplexUHF が
+  一致していれば基底は広く、v3.7 の格子では 1e-2 の seed でも戻るため
+  ``1e-3`` は許容値の約 500 倍外側から余裕をもって始められる。
+  一致していない場合は窓が皆無になりうる。``flag_fock = false``
+  時代の v3.6 fixture では、H-wave の密度は ComplexUHF の写像に対して
+  定常ではあるが**反発的**な点であり、5e-6 の seed でも 4.761e-2 まで
+  脱出した。その変位はすべて Fock 項が作用するオンサイト横スピン成分に
+  沿っている。基底半径は G2 許容値の 2.4 倍しかなく、「許容値の内側」と
+  「基底の外側」の間に隙間が無かった。flag_fock を統一したことで、
+  この fixture の G2 は定常性の確認から真の収束検証に変わり、
+  3.888e-04 から 2.437e-08 へ収縮するようになった。
+
+  上表の v3.7 の G2 値は、収縮要件の導入前に本書が記載していた値
+  (約 3e-8) より大きい。小さかったのは seed をほぼ答えの位置に
+  置いていたことによる見かけ上のもので、約 1.6e-7 が xyz fixture に
+  おける ComplexUHF の正直な収束一致である。xyz は姉妹 fixture
+  (16〜17 ステップ) より収束が遅く 91 ステップを要する。
+
+  G4 はさらに、各 fixture に同梱した ``composite_element.json`` に
+  対して方向ごと 30 エントリの mutation matrix を再検証する。schema
+  は常に 30 エントリだが、gate するのは active axis のエントリだけで
+  ある。xy/xz/yz fixture はそれぞれ、正の threshold を持つ 20 evaluation
+  と inactive axis の zero-threshold 10 エントリを持つ。xyz fixture は
+  30 evaluation すべてが正の threshold を持つ。したがって 9 active
+  axis に対し、4 fixture 全体で 90 個の相異なる policy-gated mutation
+  を評価する。従来の manifest では M-4 が sub_offset の符号を反転して
+  いたが、これは ``L_folded = [2, 2, 2]`` 上で厳密な no-op であり、
+  active axis の 18 エントリ (4 + 4 + 4 + 6) に暗黙に zero threshold
+  を割り当て、実効 evaluation 数を 72 にしていた。その後の暫定修正は
+  方向別 M-ship-4 と M-ship-5 の両方で sub_offset を省略したため、正の
+  threshold は 90 個でも相異なる evaluation は 81 個にとどまった。
+  M-gauge-4 は指定 axis の sub_offset を省略し、M-ship-4 は寄与を半分に
+  し、M-ship-5 は省略する。v3.6 の 10 エントリ whole-vector schema の
+  符号反転 semantics は変更していない。manifest producer は構造的退化、
+  非有限数、threshold policy の不一致、sub-threshold self-check のいずれ
+  でも fail closed する。runtime guard も threshold policy を独立に再計算
+  する。4 つをまとめて
+  実行するには
+  ``tests/validation/uhfk_mvmc_pairproduct/run.sh --all-v37``、
+  個別に実行するには case 名を引数に渡す。
 
 ワークフロー
 ^^^^^^^^^^^^
@@ -343,24 +488,32 @@ SOC 下では mVMC の ``vmcdry.out`` が ``StdFace_Hopping`` で ``trans.def``
 ``(i, s, j, t, re, im)`` 形式で書き出す。Rashba の spin-off-diagonal を
 保持する。
 
-符号規約 (実験的に固定):
+写像規約:
 
-- ``s == t`` (NN hopping): ``trans = -val_hwave`` (vmcdry の flip と一致)。
-- ``s != t`` (Rashba): ``trans = +val_hwave``。
+``Transfer.dat`` のエントリ ``(R, s, t, v)`` に対し、emitter はスピン
+端点を入れ替えて共役を取る:
 
-この mixed 規約 ``(sign_diag = -1, sign_offdiag = +1)`` は
-``case_soc_rashba_2d_nosub`` に対する ComplexUHF 検証で 4.4e-8% 一致
-という形で **empirically pinned** されている。mVMC の規約は
-``H = -Σ trans c†c`` だが、source-target index 規約と H-wave の k-空間
-Hamiltonian との相互作用の詳細は、本ブリッジ内では **first principles
-のみからは導出できない** — 詳細および放棄された「H-wave ``sc.py`` の
-swap から導出する」story は ``tools/_uhfk_to_mvmc/trans_emit.py`` の
-module docstring を参照 (``sc.py`` は ``epsilon_k[orb2, orb1]`` swap を
-行うが、``uhfk.py`` は同じ swap を行わないため、swap 由来の導出は
-合成できない)。一様 flip (両方 ``-val``) では同じ fixture で ⟨H⟩ が
-42.58% ずれる。**mVMC または H-wave のバージョン更新後は
-``case_soc_rashba_2d_nosub`` に対する E2E で再検証する** — mVMC 側の
-機構は ``locgrn_fsz.c:128`` に mVMC 作者の ``//TBC`` コメントが残る。
+- ``K[i, t; i+R, s] = conj(v)``
+- ``trans[i, t; i+R, s] = -conj(v)``
+
+サイト端点は変わらない。実数のスピン対角成分では入れ替えが no-op と
+なり、規則は ``trans = -v`` に帰着する (vmcdry の flip と一致)。
+mVMC の規約は ``H = -Σ trans c†c`` である。
+
+これは旧規則 (``s == t`` で ``-val``、``s != t`` で ``+val``) を置き換える。
+旧規則は導出されたものではなく経験的に固定されたもので、等価ではなく
+特殊ケースである。v3.6 の x/y Rashba 行列は固定 ``R`` において
+``v[t,s] = -conj(v[s,t])`` を満たし、これは両規則が同一の行列を出力する
+条件そのものである。v3.7 の z-SOC ブロックはスピン対称かつ実部・虚部を
+ともに持ちこの条件を満たさない。実際、H-wave の bare ``K`` の再現精度は
+旧規則が ``6.0e-01`` (``1e-10`` 超過 256 エントリ)、一般規則が
+``1.1e-12`` (超過なし) であった。
+
+v3.6 との互換性は行列等価であって byte 一致ではない。非対角行や一部の
+符号付きゼロで出力テキストは異なるが、組み上がる Hamiltonian は同一で、
+v3.6 の seven-gate E2E は変わらず通過する。導出と検証値は
+``tools/_uhfk_to_mvmc/trans_emit.py`` の module docstring を、境界位相の
+適用範囲は上記スコープ (v3.7) を参照。
 
 新規 CLI フラグ (SOC 限定): ``--transfer <path>`` と ``--emit-trans <path>``。
 
