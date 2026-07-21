@@ -151,21 +151,85 @@ This section controls the Eliashberg solver. Key parameters:
 - ``solver_mode``: ``"iteration"`` (self-consistent power iteration),
   ``"eigenvalue"`` (Arnoldi eigenvalue analysis), or ``"both"``.
 - ``chi0q_mode``: ``"load"`` reads :math:`\chi_0(\mathbf{q})` from the RPA output
-  file; ``"calc"`` computes it internally.
+  file; ``"calc"`` computes it internally; ``"flex"`` reads the dressed
+  susceptibilities from a FLEX run (required for ``frequency = "dynamic"``).
+- ``frequency``: pairing-vertex frequency treatment. ``"static"`` (default)
+  evaluates the pairing vertex at zero bosonic frequency (the Nakano--Kuroki
+  Eq. 9 static approximation) and gives a frequency-independent gap.
+  ``"dynamic"`` solves the full Matsubara-frequency-dependent Eliashberg
+  equation with a frequency-dependent pairing vertex
+  :math:`V(\mathbf{q}, i\omega_l)` and gap :math:`\phi(\mathbf{k}, i\omega_n)`;
+  it requires ``chi0q_mode = "flex"`` (see
+  :ref:`the dynamic-frequency section <sc_dynamic_frequency>` below).
 - ``pairing_type``: ``"singlet"`` or ``"triplet"``.
 - ``init_gap``: Initial gap symmetry for iteration.
   Options include ``"cos"`` (:math:`\cos(k_x+k_y+k_z)`),
   ``"d_x2y2"`` (:math:`\cos k_x - \cos k_y`), ``"random"``, etc.
   The full set of valid form factors is
   ``"cos"``, ``"s"``, ``"s_ext"``, ``"s_ext_2d"``, ``"d_x2y2"``,
+  ``"d_y2z2"`` (:math:`\cos k_y - \cos k_z`),
   ``"d_xy"``, ``"d_xz"``, ``"d_yz"``, ``"d_z2"``,
   ``"p_x"``, ``"p_y"``, ``"p_z"``, and ``"random"``.
+  For a quasi-two-dimensional cell ``CellShape = [1, Ny, Nz]``
+  (:math:`k_x = 0`) the seeds built from :math:`\sin k_x`
+  (``"p_x"``, ``"d_xy"``, ``"d_xz"``) vanish identically; use
+  ``"p_y"``/``"p_z"`` for the triplet channel, and ``"d_y2z2"`` — which has
+  opposite-sign anti-nodes at :math:`(\pi,0)` and :math:`(0,\pi)`, unlike the
+  nodal ``"d_yz"`` that vanishes there — for the in-plane :math:`d`-wave.
 - ``max_iter``: Maximum number of self-consistent iterations.
 - ``alpha``: Mixing parameter (0 = no mixing, 1 = full mixing of old solution).
 - ``convergence_tol``: Convergence criterion on the gap function.
 - ``num_eigenvalues``: Number of eigenvalues to compute in eigenvalue mode.
 - ``eigenvalue_method``: ``"arnoldi"`` (default), ``"subspace"``, or
   ``"shift-invert-gmres"`` / ``"shift-invert-bicgstab"`` / ``"shift-invert-lgmres"``.
+- ``sigma_shift`` (shift-invert ``eigenvalue_method`` only): the real target
+  :math:`\sigma` for the shift-invert eigensolver; eigenvalues near
+  :math:`\sigma` are found first. Ignored (with a warning) for the plain
+  ``"arnoldi"`` method -- use ``spectral_shift`` there instead.
+- ``spectral_shift`` (``eigenvalue_method = "arnoldi"`` only): a positive number,
+  or ``"auto"``. The default ARPACK selection (``which='LM'``) returns the
+  eigenvalues of largest *magnitude*; far from a pairing instability, a small
+  positive (attractive) leading eigenvalue can be masked by much larger negative
+  (repulsive) eigenvalues, so the reported leading value comes out negative and
+  unphysical. Setting ``spectral_shift`` makes the solver request the eigenvalue
+  of largest *real* part (``which='LR'``; the physical SC eigenvalue,
+  :math:`\lambda \to 1` at :math:`T_c`) on the shifted operator
+  :math:`A + \sigma I`; the shift is subtracted internally, so the eigenvalues
+  you receive/save are the true unshifted ones. Use ``"auto"`` to set
+  :math:`\sigma` from the spectral radius automatically, or give an explicit
+  positive :math:`\sigma` larger than the *absolute value* of the most negative
+  eigenvalue (so :math:`A + \sigma I` has an all-positive-real spectrum).
+  Recommended whenever the leading eigenvalue comes out negative or you scan
+  weakly-pairing systems (low pressure, quasi-1D). Note this differs from
+  ``sigma_shift`` above (a shift-invert *target*, not a spectral shift).
+- ``gpu``: Set ``true`` to run the dynamic-mode (``frequency = "dynamic"``)
+  kernel applications on a GPU via CuPy (default ``false``; see the
+  :ref:`GPU section <sc_dynamic_gpu_en>` below).
+- ``gpu_required``: Set ``true`` to make ``gpu = true`` strict -- the solver
+  raises instead of silently falling back to CPU when CuPy/CUDA is unavailable
+  (default ``false``). Honored by the dynamic Eliashberg solver (set it in
+  ``[eliashberg]``) and by the FLEX and RPA solvers (set it in
+  ``[mode.param]``, alongside their ``gpu`` flag).
+- ``fft_workers``: Number of FFT worker threads for the dynamic-mode spatial
+  FFTs (default ``1`` = the serial numpy path, unchanged from previous
+  releases; ``-1`` uses all cores; ignored on the GPU).
+- ``matsubara_basis``: Matsubara-axis representation of the dynamic mode:
+  ``"uniform"`` (default, unchanged) or ``"ir"`` (the sparse-ir intermediate
+  representation; see :ref:`the IR section <sc_dynamic_ir_en>` below).
+- ``ir_tol``: IR basis cutoff accuracy (default 1e-8).
+- ``ir_wmax``: real-frequency bandwidth of the IR basis, in the same energy
+  units as the Hamiltonian (auto-estimated from the dispersion spectral range
+  ``max|eps_k - mu|`` and the interaction scale when omitted; if the estimate
+  cannot be formed, the solver fails fast and asks for an explicit value).
+- ``ir_keep_static_chi``: ``true`` / ``false`` (default ``false``). When the
+  spin/charge susceptibility is static-dominated (large and nearly frequency-
+  independent within the sampled window, i.e. the near-critical regime), the
+  frequency-independent component the IR compression would otherwise discard as
+  the small :math:`O(\beta/N_\mathrm{mat})` :math:`\delta(\tau)` artifact instead
+  carries physical weight; dropping it corrupts the leading eigenvalue. If that discarded
+  component exceeds the data scale the solver aborts with guidance. Set this to
+  ``true`` to retain the static component instead of aborting (alternatively
+  lower ``ir_wmax`` or increase the FLEX ``Nmat``).
 
 Interaction definition files
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -454,6 +518,473 @@ transition dominates at lower temperatures (:math:`T < 0.05`) due to the
 enhancement of spin fluctuations. The actual transition
 (:math:`\lambda = 1`) is reached on lowering the temperature.
 
+
+.. _sc_dynamic_frequency:
+
+Dynamic (frequency-dependent) Eliashberg equation
+--------------------------------------------------
+
+By default ``hwave_sc`` solves the Eliashberg equation in the **static
+approximation**: the pairing vertex is evaluated at zero bosonic Matsubara
+frequency (the Nakano--Kuroki Eq. 9 static approximation) and the gap
+:math:`\Sigma(\mathbf{k})` carries no frequency dependence. Setting
+``frequency = "dynamic"`` in the ``[eliashberg]`` section instead solves the
+**full frequency-dependent** linearized Eliashberg equation,
+
+.. math::
+
+   \lambda\, \phi_{\alpha\beta}(\mathbf{k}, i\omega_n)
+   = -\frac{T}{N_L} \sum_{\mathbf{k}', n'}
+     V_{\alpha\beta}(\mathbf{k}-\mathbf{k}', i\omega_n - i\omega_{n'})\,
+     [G G](\mathbf{k}', i\omega_{n'})\,
+     \phi(\mathbf{k}', i\omega_{n'}),
+
+keeping the full fermionic Matsubara axis of the gap
+:math:`\phi(\mathbf{k}, i\omega_n)` together with a frequency-dependent pairing
+vertex :math:`V(\mathbf{q}, i\omega_l)`. The vertex is applied as an
+imaginary-time product (not as a static prefactor), so the kernel couples
+different Matsubara frequencies.
+
+FLEX prerequisite
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The dynamic mode needs frequency-resolved input that only the FLEX solver
+produces, so it **must** be run with ``chi0q_mode = "flex"``. Before calling
+``hwave_sc`` you must run a FLEX calculation (``mode = "FLEX"``) that writes,
+into the directory read by the Eliashberg step:
+
+- ``chiq_s.npz`` and ``chiq_c.npz`` -- the spin and charge susceptibilities on
+  the **full** bosonic Matsubara axis (all ``Nmat`` frequencies), and
+- ``green.npz`` -- the **dressed** Green's function
+  :math:`G(\mathbf{k}, i\omega_n)`, from which the pair bubble is built.
+
+.. note::
+
+   The FLEX susceptibility files carry a ``chi_convention`` tag (``"kuroki"``
+   for the reduced/squashed schemes, ``"myo"`` for the general full-vertex
+   scheme) that the Eliashberg loader uses to interpret their orbital layout.
+   For **two-orbital** systems (``norb = 2``) the reduced spin-orbital
+   dimension and the orbital-pair dimension coincide (both ``4``), so this tag
+   is what distinguishes them. H-wave versions before this fix inferred the
+   layout from shape alone and mislabeled a ``norb = 2`` reduced (kuroki) chi
+   as orbital-pair, corrupting the pairing vertex; Eliashberg eigenvalues and
+   gap functions for such runs are **corrected (and therefore change)** in this
+   version. Single-orbital and general (myo) results are unaffected.
+
+``Nmat`` must be even and must match between the FLEX output and the
+``[mode.param]`` value. If ``frequency = "dynamic"`` is requested without
+``chi0q_mode = "flex"``, with an odd ``Nmat``, or without a dressed
+``green.npz``, the solver aborts with an explanatory error rather than falling
+back silently. The FLEX output directory can be selected with
+``[file.input] path_to_flex_output`` (default: the ``[file.output]``
+directory), and the individual filenames overridden with the ``[eliashberg]``
+keys ``flex_chi_s`` / ``flex_chi_c`` / ``flex_green``.
+
+Outputs
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+In addition to ``eigenvalue.dat`` (the leading :math:`\lambda`), the dynamic
+mode writes:
+
+``gap_dynamic.npz``
+   The full frequency-resolved gap and its metadata. Keys:
+
+   - ``gap``: complex array of shape ``(norb, norb, Nx, Ny, Nz, Nmat)`` --
+     :math:`\phi_{\alpha\beta}(\mathbf{k}, i\omega_n)`.
+   - ``iomega``: the centered fermionic Matsubara frequencies
+     :math:`\omega_n = (2n + 1 - N_{\mathrm{mat}})\pi T`.
+   - ``T``: temperature.
+   - ``pairing_type``: ``"singlet"`` or ``"triplet"``.
+   - ``frequency``: ``"dynamic"``.
+   - ``eigenvalue``: the leading :math:`\lambda`.
+   - ``axis_order``: ``"(orb1, orb2, kx, ky, kz, iomega)"``.
+   - ``normalization``: the gauge convention -- the gap is L2-normalized over
+     all components and its largest-magnitude component is rotated
+     real-positive, so the stored gap is reproducible across runs and
+     linear-algebra backends.
+
+``gap.dat``
+   A single-frequency slice of the gap at the lowest positive Matsubara
+   frequency (index ``Nmat//2``), in the same column layout as the static
+   ``gap.dat`` (``kx ky kz`` then ``Re``/``Im`` per orbital pair). Its first
+   line is a ``#``-prefixed header carrying ``frequency=dynamic`` together with
+   the slice index and its :math:`\omega_n`.
+
+Channel-parity selection
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Like the static solver, the dynamic mode reports the leading eigenpair **of the
+requested pairing channel**, not merely the algebraically largest eigenvalue.
+Fermion antisymmetry fixes the combined parity of the gap under
+:math:`\phi_{\alpha\beta}(\mathbf{k}, i\omega_n) \to
+\phi_{\beta\alpha}(-\mathbf{k}, -i\omega_n)`: even for ``singlet`` (this admits
+both a conventional even-frequency and an odd-frequency singlet) and odd for
+``triplet``. The Arnoldi eigenpairs are reordered so that the channel-parity
+mode leads, and the per-eigenvalue table in ``eigenvalue.dat`` carries the same
+trailing ``match(1=channel-parity)`` column as the static output (``1`` in the
+requested sector, ``0`` in the opposite one). If none of the ``num_eigenvalues``
+computed eigenpairs lies in the requested sector, the solver warns and falls
+back to the raw leading pair; increase ``num_eigenvalues`` or check
+``pairing_type`` in that case. The power-iteration path (``solver_mode =
+"iteration"``) likewise projects every iterate onto the channel sector when the
+kernel commutes with parity (a centrosymmetric model); if it does not, the
+projection is disabled with a warning and the un-projected iteration is used.
+
+Eigenvector continuation (``seed_eigenvector``)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The reported leading eigenpair is normally the algebraically largest one. For a
+frequency-dependent (non-Hermitian) kernel this can be fragile near an
+*exceptional point* — where two real eigenvalues collide and split into a
+complex-conjugate pair — so the "leading" branch may jump discontinuously
+between neighbouring temperatures even when the FLEX self-energy varies
+smoothly. To follow one physical branch, set ``[eliashberg] seed_eigenvector``
+to a ``gap_dynamic.npz`` written by a neighbouring run (e.g. the next-higher
+temperature): its gap is used as the ARPACK start vector **and** to select the
+eigenpair whose eigenvector maximally overlaps it, rather than the largest one.
+Stepping temperature down and feeding each run the previous ``gap_dynamic.npz``
+tracks the same gap symmetry (e.g. the d-wave mode) continuously. The seed must
+share the run's ``CellShape`` and ``Nmat`` (a mismatch is a fail-fast error), so
+keep ``Nmat`` fixed across a continuation sweep; on the IR path the seed gap is
+refit onto the IR nodes automatically. ``[eliashberg] sigma_shift`` sets an
+explicit shift-invert target (otherwise estimated from a preliminary Arnoldi);
+combining ``sigma_shift`` near the branch with ``seed_eigenvector`` is the most
+robust way to resolve a masked or complexifying eigenvalue.
+
+Temperature continuation (``hwave_tsweep``)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Chaining ``sigma_init`` and ``seed_eigenvector`` by hand across a temperature
+sweep, as described above, means re-running ``hwave``/``hwave_sc`` once per
+temperature and wiring each step's output into the next step's input. The
+``hwave_tsweep`` command (installed alongside ``hwave`` and ``hwave_sc``)
+automates this: given one base TOML -- the same
+``[mode]``/``[mode.param]``/``[file]``/``[eliashberg]`` configuration used
+for a single FLEX+Eliashberg run -- plus a ``[continuation]`` section, it
+runs FLEX (and, unless disabled, the Eliashberg solver) across a descending
+ladder of temperatures. At each rung it feeds the previous rung's converged
+self-energy into this rung's FLEX via ``sigma_init`` (warm start) and the
+previous rung's dynamic gap into this rung's Eliashberg solve via
+``seed_eigenvector`` (eigenvector continuation) -- automating the whole
+warm-start chain so a single physical branch is tracked smoothly down to low
+temperature instead of being cold-started, and potentially landing on a
+different metastable solution, at every point.
+
+Only ``mode.param.T`` is varied between rungs; ``CellShape``, ``Nmat``, and
+every other shape-determining field are held fixed across the ladder, which
+is what keeps each rung's ``sigma_init``/``seed_eigenvector`` files
+shape-compatible with the next rung.
+
+The ``[continuation]`` section
+""""""""""""""""""""""""""""""
+
+.. code-block:: toml
+
+    [continuation]
+      temperatures   = [0.02, 0.015, 0.01, 0.008, 0.006]  # explicit ladder
+      # or, if `temperatures` is absent, a generated ladder:
+      #   T_start = 0.02
+      #   T_stop  = 0.006
+      #   num     = 5
+      #   spacing = "linear"          # "linear" (default) or "log"
+      output_dir     = "tsweep"       # default
+      run_eliashberg = true           # default
+      warm_start     = true           # default
+      seed_gap       = true           # default
+      resume         = false          # default; or pass --resume
+      summary_file   = "lambda_vs_T.dat"  # default
+
+- ``temperatures``: an explicit list of temperatures, run in the order given.
+  If present it takes precedence over ``T_start``/``T_stop``/``num``.
+- ``T_start`` / ``T_stop`` / ``num`` / ``spacing``: used to generate the
+  ladder when ``temperatures`` is absent -- ``num`` points between
+  ``T_start`` and ``T_stop``, with ``spacing`` ``"linear"`` (default) or
+  ``"log"``. Supplying neither ``temperatures`` nor the ``T_start``/``T_stop``/``num``
+  triple is a pre-flight error.
+- ``output_dir`` (default ``"tsweep"``): the parent directory for the sweep.
+  Rung ``idx`` at temperature ``T`` writes to
+  ``<output_dir>/<idx>_T<T>/output/`` (``idx`` zero-padded to 3 digits, ``T``
+  ``%g``-formatted).
+- ``run_eliashberg`` (default ``true``): also run the Eliashberg solver at
+  each rung. This requires the base TOML to already have an ``[eliashberg]``
+  section -- pre-flight raises an error otherwise, naming the missing
+  section. Set to ``false`` to run a FLEX-only sweep that chains only
+  ``sigma_init``.
+- ``warm_start`` (default ``true``): chain each rung's converged self-energy
+  into the next rung's ``sigma_init``.
+- ``seed_gap`` (default ``true``): chain each rung's gap into the next
+  rung's ``seed_eigenvector``. This is only active for the dynamic
+  Eliashberg solver (``[eliashberg] frequency = "dynamic"``); for a static
+  ladder it has no effect, since ``seed_eigenvector`` itself is dynamic-only.
+- ``summary_file`` (default ``"lambda_vs_T.dat"``): filename of the summary
+  table written to ``<output_dir>/<summary_file>``.
+
+Running the sweep
+""""""""""""""""""""""""""""""
+
+.. code-block:: bash
+
+    $ hwave_tsweep input.toml
+
+Three flags control the run:
+
+- ``--dry-run``: resolve and print the temperature ladder, each rung's
+  output directory, and the ``sigma_init``/``seed_eigenvector`` paths that
+  would be wired up -- without invoking either solver. Use this to validate
+  a ``[continuation]`` config before committing to a long sweep.
+- ``--keep-going``: by default a rung whose solver raises an error stops the
+  sweep (a broken rung would otherwise poison every downstream seed, and the
+  partial summary is still written); with ``--keep-going`` the next rung is
+  instead cold-started, and if it succeeds it becomes the seed for
+  subsequent rungs again. This is *error continuation within one process*,
+  not a restart after the process itself was interrupted.
+- ``--resume`` (or ``[continuation] resume = true``): *job-level restart*.
+  When a sweep is rerun with resume, ``hwave_tsweep`` skips the longest
+  contiguous prefix of already-completed, seedable rungs and restarts at the
+  first incomplete one -- seeded from the last valid rung's ``sigma`` and
+  dynamic gap, exactly as if the sweep had never stopped. Use it after a
+  wall-clock/scheduler kill, a crash, or a manual interrupt.
+
+  A rung counts as completed only when its recorded summary row is non-error
+  **and** its on-disk outputs are actually present and parseable (a
+  half-written or corrupt ``eigenvalue.dat`` is detected and that rung, plus
+  every rung after it, is recomputed). Resume is guarded by a small manifest
+  (``tsweep_manifest.json``, written on the first run) recording the resolved
+  ladder and a fingerprint of the shape/physics configuration
+  (``CellShape``/``SubShape``/``Nmat``/``filling``/``Ncond``/interaction
+  files/``[eliashberg]`` frequency/pairing). Resuming against a different
+  ladder or configuration **fails fast** rather than mixing incompatible
+  results. The summary and manifest are written atomically after every rung,
+  so an interruption can never leave a truncated checkpoint. Without
+  ``--resume`` a rerun starts fresh and overwrites the existing sweep
+  rung-by-rung (a warning is logged when it detects an existing sweep).
+
+The three are distinct: **warm start** (``warm_start``/``seed_gap``) chains
+one rung's result into the *next* rung's seed within a single run;
+**--keep-going** decides what happens *after a rung errors* within one run;
+**--resume** decides what happens when a *whole run* is restarted.
+
+Summary file
+""""""""""""""""""""""""""""""
+
+Each run writes ``<output_dir>/<summary_file>`` (default
+``tsweep/lambda_vs_T.dat``), one row per rung:
+
+.. code-block:: text
+
+    # idx  T  status  error_stage  Re_lambda  Im_lambda  parity_match  flex_converged  flex_iter
+    0 0.02   ok    none 0.845000 0.000000 1 1 18
+    1 0.015  ok    none 0.902000 0.000000 1 1 22
+    2 0.01   error flex nan      nan      -1 0 -1
+    ...
+
+``status`` is one of:
+
+- ``ok`` -- FLEX converged and, if ``run_eliashberg``, the leading eigenpair
+  was parsed from this rung's ``eigenvalue.dat``.
+- ``not_converged`` -- FLEX ran to ``IterationMax`` without meeting ``EPS``,
+  but still wrote a usable self-energy (and gap, if Eliashberg ran); such a
+  rung is still eligible to seed the next one.
+- ``error`` -- a solver raised, or (with ``run_eliashberg``) ``eigenvalue.dat``
+  was missing or unparseable; ``error_stage`` then records which solver
+  failed (``flex`` or ``eliashberg``).
+- ``dry`` -- a row produced by ``--dry-run``; no solver was invoked.
+
+Missing floats (``Re_lambda``/``Im_lambda`` when Eliashberg did not run or
+failed) print as ``nan``; missing integer fields (``parity_match``,
+``flex_converged``, ``flex_iter``) print as ``-1``. ``error_stage`` is
+``none`` unless ``status = error``.
+
+Example
+""""""""""""""""""""""""""""""
+
+.. code-block:: toml
+
+    [mode]
+      mode = "FLEX"
+
+    [mode.param]
+      T         = 0.02
+      CellShape = [32, 32, 1]
+      Nmat      = 512
+      filling   = 0.75
+
+    [file]
+    [file.input]
+      path_to_input = "."
+
+    [file.input.interaction]
+      path_to_input = "."
+      Geometry      = "geom.dat"
+      Transfer      = "transfer.dat"
+      CoulombIntra  = "coulombintra.dat"
+      CoulombInter  = "coulombinter.dat"
+
+    [file.output]
+      path_to_output = "output"
+
+    [eliashberg]
+      frequency     = "dynamic"
+      chi0q_mode    = "flex"
+      pairing_type  = "singlet"
+      solver_mode   = "eigenvalue"   # required by hwave_tsweep pre-flight
+
+    [continuation]
+      T_start        = 0.02
+      T_stop         = 0.005
+      num            = 6
+      spacing        = "log"
+      run_eliashberg = true
+      warm_start     = true
+      seed_gap       = true
+
+This descends from :math:`T = 0.02` to :math:`T = 0.005` over 6
+log-spaced rungs, running FLEX + dynamic Eliashberg at each, chaining both
+``sigma_init`` and ``seed_eigenvector``, and writing
+``tsweep/lambda_vs_T.dat`` -- a :math:`\lambda(T)` table from which
+:math:`T_c` can be estimated as the point where the leading physical
+eigenvalue crosses 1.
+
+Memory note
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The dynamic solver stores several full-frequency tensors (the pairing vertex,
+the pair bubble, and the gap), so its peak memory scales roughly as
+:math:`\mathcal{O}(N_{\mathrm{orb}}^4\, N_k\, N_{\mathrm{mat}})` and grows
+quickly with the orbital count, k-mesh, and number of Matsubara frequencies.
+Before allocating, ``hwave_sc`` estimates the peak requirement and aborts if it
+would exceed the limit; set ``[eliashberg] mem_limit_gb`` to cap it explicitly
+(``0`` disables the guard), otherwise a fraction of the available RAM is used.
+The estimate reads the stored ``Nmat`` (the Matsubara-frequency axis) from the
+on-disk file headers (``chiq_s.npz`` / ``chiq_c.npz`` / ``green.npz``) rather
+than trusting only the configured value, so a file whose stored ``Nmat`` differs
+from the configuration is rejected up front (before allocation) instead of
+causing an out-of-memory crash mid-load. (The k-mesh and orbital count are taken
+from the configuration; a mismatch there surfaces as a reshape error from the
+loader.)
+
+Performance note
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The eigenvalue solve is dominated by repeated applications of the kernel. Two
+optimizations keep this cheap: the vertex's imaginary-time transform (the
+kernel's most expensive step) is precomputed once instead of on every matvec,
+and the spatial FFTs are run in parallel via ``scipy.fft``. ``[eliashberg]
+fft_workers`` sets the number of FFT worker threads: ``1`` (default) keeps the
+serial numpy path unchanged from previous releases, ``-1`` uses all cores
+(opt-in); set a smaller number (e.g. matching ``OMP_NUM_THREADS``) when running
+several dynamic solves concurrently to avoid oversubscribing the CPU. Together
+these give roughly a 4x speedup at ``norb = 2``, ``N_k = 1024``,
+``N_{mat} = 1024``. On the GPU (``gpu = true``) the FFTs already run on the
+device and ``fft_workers`` is ignored.
+
+.. _sc_dynamic_ir_en:
+
+IR-basis (sparse-ir) compression of the Matsubara axis
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``matsubara_basis = "ir"`` replaces the dynamic mode's uniform Matsubara grid
+(``Nmat`` points) by the sparse sampling nodes of the intermediate
+representation (IR) basis -- typically 50-100 nodes, improving with lower
+temperature. Requires the optional
+`sparse-ir <https://sparse-ir.readthedocs.io>`_ package
+(``pip install sparse-ir``). The kernel, the eigen-iteration, and the parity
+filtering all run on the sparse nodes, cutting the frequency-axis memory and
+compute by ``Nmat/L`` (20-40x). Note that ``Nmat`` keeps its role: the
+preceding FLEX run still produces (and must converge on) the uniform
+``Nmat`` grid that the IR loader reads, and the outputs below are densified
+back onto it -- IR compresses the dynamic solver's INTERNAL frequency axis,
+whose node count is set by ``beta * ir_wmax`` and ``ir_tol``, not by
+``Nmat``. Composes with GPU execution (``gpu = true``, which still requires
+CuPy; ``fft_workers`` keeps its meaning for the CPU spatial FFTs and is
+ignored on the GPU).
+
+Outputs (``gap_dynamic.npz`` / ``gap.dat``) are densified back to the uniform
+grid, so downstream analysis works unchanged (the npz gains provenance
+metadata such as ``matsubara_basis``).
+
+When the FLEX run itself uses ``[mode.param] matsubara_basis = "ir"`` with
+``write_densified = false`` (IR-native output files, recognizable by their
+``frequency_grid = "sparse_ir_nodes"`` key), the dynamic solver with
+``matsubara_basis = "ir"`` consumes them directly: the stored node values
+are used as-is when the node sets coincide (the common case), or refit onto
+this run's basis otherwise (logged, with a residual check). The temperature
+must match the FLEX run (a mismatch is an error — the susceptibilities are
+physics input). With ``matsubara_basis = "uniform"``, IR-native inputs are
+rejected with an explicit error; either switch this solver to ``"ir"`` or
+re-run FLEX with ``write_densified = true``.
+
+.. note::
+
+   FLEX outputs computed on the uniform FFT grid (``chiq_s.npz`` etc.) carry
+   ``O(beta/Nmat)`` discretization artifacts (a delta(tau)-derived constant
+   offset plus aliasing images). The IR loader isolates and discards the
+   constant when it is small (logged); if the fitted constant is
+   COMPARABLE to the data scale it cannot be the discretization artifact,
+   and the run stops with an error instead of silently corrupting the
+   result (remedies, also printed by the error: use the automatic
+   ``ir_wmax`` or a value near ``3*(bandwidth + max interaction)``;
+   increase the FLEX ``Nmat``; set ``ir_keep_static_chi = true`` to
+   retain a genuinely static component; or fall back to
+   ``matsubara_basis = "uniform"``). The eigenvalue difference between
+   the IR and uniform paths is bounded by this input-data quality
+   (measured ~1.5e-2 relative at ``Nmat=128`` and ~4e-3 at ``Nmat=512``
+   on the small test fixture with the dispersion-based automatic
+   ``ir_wmax``; these numbers are fixture-specific, not a general
+   guarantee); both converge to the same continuum limit as ``Nmat``
+   grows. For production use, validate once per model: raise the FLEX
+   ``Nmat`` (or compare a uniform run against the IR run at the same
+   ``Nmat``) and check that the leading eigenvalue shift is within your
+   tolerance.
+
+.. warning::
+
+   Dynamic IR results computed with H-wave versions BEFORE the issue-#57
+   fix are incorrect for any model whose pairing vertex has a nonzero
+   frequency-independent part — in particular anything with off-site
+   ``CoulombInter`` (pure on-site-``CoulombIntra`` models were
+   unaffected: their bare vertex term cancels exactly). Recompute such
+   runs; large changes in lambda are expected (they were the bug, not a
+   physics change). The automatic ``ir_wmax`` estimate also changed to a
+   dispersion-based bound and is now much smaller (and correct) on
+   realistic multi-hopping models.
+
+.. _sc_dynamic_gpu_en:
+
+GPU execution (CuPy)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Setting ``gpu = true`` in the ``[eliashberg]`` section runs the dynamic-mode
+kernel applications (the eigensolver's matvec) on a GPU. The two large
+invariant tensors (the pair bubble :math:`[GG]` and the pairing vertex) are
+moved to the device once before the iteration starts; each iteration then only
+transfers the gap vector. The result is numerically identical to the CPU run
+(within double-precision round-off).
+
+- Applies to ``frequency = "dynamic"`` only. The static solver is CPU-only, so
+  setting ``gpu = true`` with ``frequency = "static"`` (or omitted, which
+  defaults to static) fails fast with a ``ValueError`` rather than silently
+  ignoring the flag.
+- Requires `CuPy <https://cupy.dev/>`_ and a usable CUDA device. When CuPy is
+  missing or no device is found, the solver warns and falls back to the CPU
+  (numpy) path automatically -- same result, only slower.
+- ``gpu_required = true`` (default ``false``) turns the silent CPU fallback
+  into a hard error: if ``gpu = true`` is requested but no usable CuPy/CUDA
+  backend exists, the solver raises instead of quietly running on the CPU, so
+  a large scheduler job fails fast rather than turning a short GPU run into a
+  very long CPU run. The same flag is honored by the FLEX and RPA solvers.
+- Before the large device allocation, the FLEX and RPA GPU paths run an
+  advisory VRAM preflight: if the estimated resident tensors exceed the free
+  device memory, they log a warning naming the solver and the estimated/free
+  amounts (CuPy still raises a hard out-of-memory error on the actual
+  allocation).
+- The GPU memory requirement is roughly the two resident tensors,
+  :math:`2 \times 16\, N_{\mathrm{orb}}^4\, N_k\, N_{\mathrm{mat}}` bytes,
+  plus workspace; if it does not fit, CuPy aborts with an explicit
+  out-of-memory error.
+- Reference point: :math:`N_{\mathrm{orb}}=2`, a :math:`64\times 64` k-mesh,
+  and :math:`N_{\mathrm{mat}}=2048` give roughly a 16x per-matvec speedup over
+  the CPU path (NVIDIA RTX 6000 Ada, about 5 GB of GPU memory).
 
 Supported interactions
 ----------------------------

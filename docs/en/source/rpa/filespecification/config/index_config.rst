@@ -188,6 +188,7 @@ Parameters
   **Description :**
   This parameter specifies the magnitude of the correction when correcting the tails of the Fourier transformation.
   After Fourier transforming the diagonalized one-body Green function to the imaginary time representation by subtracting :math:`\texttt{coeff\_tail}/(i \omega_n)`, the term :math:`-\beta/2\cdot\texttt{coeff\_tail}` is added to the one-body Green function.
+  In the FLEX solver the same tail treatment is applied to the *dressed* Green function before the bare susceptibility :math:`\chi_0(q)` is computed, so that ``coeff_tail`` accelerates the frequency summation without changing the physical result. (The FLEX self-energy convolution keeps the full Green function and is unaffected.)
 
 - ``matsubara_frequency``
 
@@ -232,6 +233,56 @@ Parameters
 
   **Description :**
   This parameter specifies the upper cutoff of the exponent in the Fermi distribution function to avoid overflow during the calculation.
+
+- ``gpu``
+
+  **Type :**
+  Boolean (default value is false)
+
+  **Description :**
+  When set to true, the main computation (the Green's function, the chi0q
+  FFT pair bubble, the spin inflation, and the batched RPA solve; for FLEX
+  the whole SCF loop) runs on a GPU via CuPy. When CuPy or a CUDA device is
+  unavailable, the solver warns and falls back to the CPU (numpy) path with
+  an identical result. Install CuPy as the precompiled binary wheel matching
+  your CUDA version (e.g. ``pip install cupy-cuda12x`` for CUDA 12.x); see
+  the `CuPy installation guide <https://docs.cupy.dev/en/stable/install.html>`_.
+
+- ``fft_workers``
+
+  **Type :**
+  Integer (default value is 1)
+
+  **Description :**
+  Number of worker threads for the spatial FFTs (parallelized via
+  ``scipy.fft``). The default 1 keeps the serial numpy path, unchanged
+  from previous releases (opt-in); -1 uses all cores. Ignored on the
+  GPU. Set a smaller number when running several calculations
+  concurrently.
+
+- ``mixing_scheme``
+
+  **Type :**
+  String (default value is "linear"; FLEX mode only)
+
+  **Description :**
+  Self-energy update scheme of the FLEX SCF loop. ``"linear"`` is the
+  conventional linear mixing; ``"anderson"`` enables Anderson acceleration
+  (Pulay/DIIS-type extrapolation over a short iterate/residual history),
+  which reaches the same fixed point in far fewer iterations. Anderson
+  acceleration is less sensitive to step-size instability than linear
+  mixing, so a somewhat larger ``Mix`` (e.g. 0.3--0.5) can reduce the
+  iteration count further. Falls back to a plain linear step automatically
+  if the history becomes degenerate.
+
+- ``anderson_depth``
+
+  **Type :**
+  Integer (default value is 5; FLEX mode only)
+
+  **Description :**
+  History depth of the Anderson acceleration. Memory grows by 2*depth
+  sigma-sized arrays (kept on the device under GPU execution).
 
 
 ``log`` section
@@ -291,6 +342,19 @@ They specify the settings of the input and output files, respectively, on the ty
 
   **Description :**
   This parameter specifies the filename of the initial Green's function for RPA calculation. The file format corresponds to the output file of ``green`` of UHFk. When ``trans_mod`` is specified, ``green_init`` is not used.
+
+- ``sigma_init``
+
+  **Type :**
+  String (FLEX mode only)
+
+  **Description :**
+  This parameter specifies the filename of a ``sigma.npz`` (written by an
+  earlier FLEX run) used to seed the FLEX SCF loop instead of Sigma = 0. The
+  path is resolved relative to ``path_to_input``. The recorded ``CellShape``
+  and the array's ``Nmat`` must match the current run (a mismatch is a
+  fail-fast error). See the FLEX tutorial section "Warm-starting the SCF
+  loop" for the sweep workflow.
 
 
 ``file.input.interaction`` section

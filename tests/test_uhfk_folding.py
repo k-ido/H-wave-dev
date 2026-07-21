@@ -20,6 +20,7 @@ class TestReshapeInteractionAccumulation(unittest.TestCase):
         solver.subshape = (1, 1, 1)
         solver.shape = (1, 1, 1)
         solver.norb_orig = 1
+        solver.norb_phys_orig = 1
         solver.param_ham_orig = {"Geometry": {"norb": 1}}
         return solver
 
@@ -51,6 +52,7 @@ class TestReshapeInteractionStrideSO(unittest.TestCase):
         solver.shape = tuple(c // s for c, s in zip(cellshape, subshape))
         solver.norb_orig = norb_orig
         solver.enable_spin_orbital = enable_spin_orbital
+        solver.norb_phys_orig = norb_orig // 2 if enable_spin_orbital else norb_orig
         solver.param_ham_orig = {"Geometry": {"norb": norb_orig}}
         return solver
 

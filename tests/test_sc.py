@@ -37,6 +37,7 @@ from hwave.sc import (
     _initialize_gap,
     _is_gap_parity,
     _make_kernel_operator,
+    _order_by_seed_overlap,
     _order_eigenpairs,
     _project_gap_parity,
     _reorder_eigenpairs_by_parity,
@@ -46,9 +47,11 @@ from hwave.sc import (
     _shift_from_eigenvalues,
     _solve_eigenvalue,
     _solve_iteration,
+    _solve_leading,
     _solve_subspace_iteration,
     _solve_shifted_bicg,
 )
+from scipy.sparse.linalg import LinearOperator
 
 
 class TestGreenFunction(unittest.TestCase):
@@ -494,7 +497,7 @@ class TestInitializeGap(unittest.TestCase):
 
         all_modes = [
             "cos", "s", "s_ext", "s_ext_2d",
-            "d_x2y2", "d_xy", "d_xz", "d_yz", "d_z2",
+            "d_x2y2", "d_y2z2", "d_xy", "d_xz", "d_yz", "d_z2",
             "p_x", "p_y", "p_z",
             "random",
         ]
@@ -518,7 +521,7 @@ class TestInitializeGap(unittest.TestCase):
 
         all_modes = [
             "cos", "s", "s_ext", "s_ext_2d",
-            "d_x2y2", "d_xy", "d_xz", "d_yz", "d_z2",
+            "d_x2y2", "d_y2z2", "d_xy", "d_xz", "d_yz", "d_z2",
             "p_x", "p_y", "p_z",
             "random",
         ]
@@ -547,6 +550,84 @@ class TestInitializeGap(unittest.TestCase):
         val_0pi = sigma[0, 0, 0, iy_pi, 0]
         self.assertLess(val_pi0 * val_0pi, 0,
                         "d_{x^2-y^2} should change sign between (pi,0) and (0,pi)")
+
+    def test_d_y2z2_symmetry(self):
+        """In-plane d_{y^2-z^2} = cos(ky) - cos(kz) sign structure.
+
+        For a [1, Ny, Nz] cell (kx squashed) this is the d-wave that
+        sign-changes across the (pi, 0) <-> (0, pi) zone-boundary q, unlike
+        d_yz = sin(ky) sin(kz) which has a node there.
+        """
+        N = 8
+        kx = np.linspace(0, 2 * np.pi, 1, endpoint=False)   # Nx=1, kx=0
+        ky = np.linspace(0, 2 * np.pi, N, endpoint=False)
+        kz = np.linspace(0, 2 * np.pi, N, endpoint=False)
+        i_pi = N // 2
+        d = _initialize_gap("d_y2z2", 1, kx, ky, kz)
+        val_pi0 = d[0, 0, 0, i_pi, 0]     # (ky, kz) = (pi, 0) -> cos(pi)-cos(0) < 0
+        val_0pi = d[0, 0, 0, 0, i_pi]     # (ky, kz) = (0, pi) -> cos(0)-cos(pi) > 0
+        self.assertLess(val_pi0 * val_0pi, 0,
+                        "d_{y^2-z^2} should change sign between (pi,0) and (0,pi)")
+        # contrast: d_yz has a node at both of these q-points
+        dyz = _initialize_gap("d_yz", 1, kx, ky, kz)
+        npt.assert_allclose(dyz[0, 0, 0, i_pi, 0], 0.0, atol=1e-12)
+        npt.assert_allclose(dyz[0, 0, 0, 0, i_pi], 0.0, atol=1e-12)
+        # even under k -> -k over the whole grid (singlet/even parity)
+        for iy in range(N):
+            for iz in range(N):
+                npt.assert_allclose(
+                    d[0, 0, 0, iy, iz], d[0, 0, 0, (-iy) % N, (-iz) % N],
+                    atol=1e-12,
+                    err_msg="d_y2z2 not even at (iy,iz)=({},{})".format(iy, iz))
+
+    def test_inplane_modes_vanish_when_kx_squashed(self):
+        """Form factors built from sin(kx) vanish identically for a [1,Ny,Nz]
+        cell (kx=0), so p_x / d_xy / d_xz are invalid seeds there; the valid
+        in-plane seeds are p_y, p_z, d_yz and d_y2z2."""
+        N = 8
+        kx = np.linspace(0, 2 * np.pi, 1, endpoint=False)   # kx = 0
+        ky = np.linspace(0, 2 * np.pi, N, endpoint=False)
+        kz = np.linspace(0, 2 * np.pi, N, endpoint=False)
+        for mode in ("p_x", "d_xy", "d_xz"):
+            sigma = _initialize_gap(mode, 1, kx, ky, kz)
+            npt.assert_allclose(
+                np.linalg.norm(sigma), 0.0, atol=1e-12,
+                err_msg="{} must vanish when kx is squashed".format(mode))
+        for mode in ("p_y", "p_z", "d_yz", "d_y2z2"):
+            sigma = _initialize_gap(mode, 1, kx, ky, kz)
+            self.assertGreater(
+                np.linalg.norm(sigma), 0.5,
+                "{} should be a nonzero in-plane seed".format(mode))
+
+    def test_vanishing_seed_warns(self):
+        """Form factors that vanish on the grid warn on any squashed axis; a
+        valid nonzero seed does not warn."""
+        N = 4
+        k1 = np.linspace(0, 2 * np.pi, 1, endpoint=False)   # squashed axis
+        kN = np.linspace(0, 2 * np.pi, N, endpoint=False)
+        # p_x = sin(kx) vanishes at Nx=1
+        with self.assertLogs("hwave_sc", level="WARNING") as cm:
+            _initialize_gap("p_x", 1, k1, kN, kN)
+        self.assertTrue(any("zero" in m for m in cm.output))
+        # p_z = sin(kz) vanishes at Nz=1 (a different axis)
+        with self.assertLogs("hwave_sc", level="WARNING") as cm:
+            _initialize_gap("p_z", 1, kN, kN, k1)
+        self.assertTrue(any("zero" in m for m in cm.output))
+        # a valid in-plane seed must NOT warn (Python 3.9-compatible: capture
+        # handler, since unittest.assertNoLogs only exists on 3.10+)
+        import logging
+        captured = []
+        handler = logging.Handler()
+        handler.emit = captured.append
+        lg = logging.getLogger("hwave_sc")
+        lg.addHandler(handler)
+        try:
+            _initialize_gap("p_y", 1, k1, kN, kN)
+        finally:
+            lg.removeHandler(handler)
+        self.assertEqual(
+            [r for r in captured if r.levelno >= logging.WARNING], [],
+            "valid seed p_y must not emit a WARNING")
 
     def test_p_wave_odd(self):
         """Test p-wave gap is odd under k -> -k."""
@@ -650,6 +731,55 @@ class TestEigenpairOrdering(unittest.TestCase):
         self.assertAlmostEqual(ovals[0].real, 2.0)
         npt.assert_allclose(ovecs[:, 0], vecs[:, 1])
         npt.assert_allclose([v.real for v in ovals], [2.0, 0.5, -5.0])
+
+
+class TestSeedOverlapSelection(unittest.TestCase):
+    """When a seed eigenvector is supplied (eigenvector continuation), the
+    leading eigenpair must be the one that maximally overlaps the seed, not
+    the algebraically largest one. This must hold in the ``vec_size <= 2``
+    dense fallback (smallest dynamic grids, e.g. norb=1/Nk=1/Nmat=2) just as
+    it does in the ARPACK path -- see issue #61."""
+
+    @staticmethod
+    def _diag_operator(diag):
+        """A LinearOperator for a real diagonal matrix, standard-basis
+        eigenvectors. ``make_operator`` returns ``(A, vec_size)``."""
+        diag = np.asarray(diag, dtype=complex)
+        n = diag.size
+        A = LinearOperator(
+            (n, n), matvec=lambda x: diag * np.asarray(x).ravel(),
+            dtype=complex)
+        return lambda: (A, n)
+
+    def test_dense_fallback_selects_seeded_branch(self):
+        # eigenvalues 2.0 (basis vec e0) and 1.0 (basis vec e1); the largest
+        # real part is 2.0, but the seed points at the 1.0-branch.
+        make_op = self._diag_operator([2.0, 1.0])
+        seed = np.array([0.0, 1.0], dtype=complex)
+        val, vec, info = _solve_leading(
+            make_op, 2, "arnoldi", seed_vec=seed)
+        # Without seed handling the dense fallback would return 2.0/e0.
+        self.assertAlmostEqual(val.real, 1.0)
+        self.assertAlmostEqual(abs(np.vdot(vec, seed)), 1.0, places=10)
+        self.assertAlmostEqual(info["eigenvalues"][0].real, 1.0)
+
+    def test_dense_fallback_without_seed_uses_largest_real(self):
+        # eigenvalues [2.0, -5.0]: largest real (2.0) != largest magnitude (5.0),
+        # so this catches a regression back to magnitude ordering.
+        make_op = self._diag_operator([2.0, -5.0])
+        val, vec, info = _solve_leading(make_op, 2, "arnoldi")
+        # No seed -> physical SC eigenvalue is the algebraically largest.
+        self.assertAlmostEqual(val.real, 2.0)
+
+    def test_dense_fallback_equal_overlap_breaks_tie_by_real_part(self):
+        # A seed equally overlapping both basis eigenvectors must fall back to
+        # the physical (largest-real) ordering, not the eigensolver's arbitrary
+        # order (issue #61 tie-break contract).
+        make_op = self._diag_operator([1.0, 3.0])       # e1 has the larger real
+        seed = np.array([1.0, 1.0], dtype=complex) / np.sqrt(2.0)
+        val, vec, info = _solve_leading(make_op, 2, "arnoldi", seed_vec=seed)
+        self.assertAlmostEqual(val.real, 3.0)
+        self.assertAlmostEqual(info["eigenvalues"][0].real, 3.0)
 
 
 class TestParitySelection(unittest.TestCase):
@@ -1244,7 +1374,7 @@ class TestChi0qConversion(unittest.TestCase):
         chi0q_hwave = np.random.randn(nmat, nvol, norb, norb) + \
                       1j * np.random.randn(nmat, nvol, norb, norb)
 
-        chi0q_ref = _convert_chi0q_to_ref_format(chi0q_hwave, norb, Nx, Ny, Nz, nmat)
+        chi0q_ref = _convert_chi0q_to_ref_format(chi0q_hwave, norb, Nx, Ny, Nz)
         self.assertEqual(chi0q_ref.shape, (norb, norb, Nx, Ny, Nz, nmat))
 
         # Verify mapping: chi0q_hwave[w, vol_idx, a, b] == chi0q_ref[a, b, ix, iy, iz, w]
@@ -2314,7 +2444,10 @@ class TestChi0qInternal(unittest.TestCase):
 
             # Load it back
             from hwave.sc import _load_chi0q
-            chi0q_loaded = _load_chi0q(input_dict)
+            chi0q_loaded, static_index = _load_chi0q(input_dict)
+            self.assertIsNone(static_index,
+                              "metadata-less file: the caller slices the "
+                              "center of its actual frequency axis")
 
             npt.assert_allclose(chi0q_calc, chi0q_loaded, atol=1e-15,
                                 err_msg="Loaded chi0q should exactly match computed chi0q")
@@ -2449,7 +2582,7 @@ class TestChi0q4Index(unittest.TestCase):
         rng = np.random.default_rng(42)
         chi0q_hw = rng.standard_normal((nmat, nvol, norb, norb, norb, norb))
 
-        chi0q_ref = _convert_chi0q_to_ref_format(chi0q_hw, norb, Nx, Ny, Nz, nmat)
+        chi0q_ref = _convert_chi0q_to_ref_format(chi0q_hw, norb, Nx, Ny, Nz)
 
         # Should be (norb, norb, norb, norb, Nx, Ny, Nz, nmat)
         self.assertEqual(chi0q_ref.shape,
@@ -2496,8 +2629,8 @@ class TestChi0q4Index(unittest.TestCase):
             nmat = 32
 
             # Convert to ref format
-            chi0q_gen_ref = _convert_chi0q_to_ref_format(chi0q_gen, norb, Nx, Ny, Nz, nmat)
-            chi0q_red_ref = _convert_chi0q_to_ref_format(chi0q_red, norb, Nx, Ny, Nz, nmat)
+            chi0q_gen_ref = _convert_chi0q_to_ref_format(chi0q_gen, norb, Nx, Ny, Nz)
+            chi0q_red_ref = _convert_chi0q_to_ref_format(chi0q_red, norb, Nx, Ny, Nz)
 
             U_k = np.zeros((norb, norb, Nx, Ny, Nz), dtype=complex)
             U_k[0, 0] = 3.0
@@ -3071,7 +3204,7 @@ class TestKanamoriInteraction(unittest.TestCase):
 
             # Compute chi0q in sc.py ref format
             chi0q_ref = _convert_chi0q_to_ref_format(
-                chi0q_rpa, norb, Nx, Ny, Nz, nmat)
+                chi0q_rpa, norb, Nx, Ny, Nz)
 
             # Build interaction in k-space for sc.py
             inter_k = self._make_inter_k(norb, Nx, Ny, Nz,

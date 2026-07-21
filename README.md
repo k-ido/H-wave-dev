@@ -26,6 +26,8 @@ H-wave is a Python package for performing the unrestricted Hartree-Fock (UHF) ap
 - **Target models**: Hubbard, multi-orbital Hubbard, and extended Hubbard models
 - **Interaction types**: Coulomb intra/inter, Exchange, Hund, Ising, PairHop, PairLift
 - **Output**: ground-state energy, free energy, charge/spin susceptibilities, Green's functions, self-energy, density of states
+- **GPU (CuPy) acceleration** for RPA, FLEX, and the dynamic Eliashberg solver (`gpu = true`), plus opt-in parallel spatial FFTs (`fft_workers`)
+- **IR-basis Matsubara compression** (sparse-ir) for the dynamic Eliashberg solver (`matsubara_basis = "ir"`): 20-64x fewer frequency points at low temperature
 - **Wannier90 format compatibility** for seamless integration with first-principles calculations
 
 ## Installation
@@ -41,6 +43,13 @@ git clone https://github.com/issp-center-dev/H-wave.git
 cd H-wave
 pip install -e .
 ```
+
+Optional (GPU execution): install the CuPy binary wheel matching your CUDA
+version, e.g. `pip install cupy-cuda12x` for CUDA 12.x (see the
+[CuPy installation guide](https://docs.cupy.dev/en/stable/install.html)).
+Without CuPy, `gpu = true` falls back to the CPU path with a warning.
+Optional (IR Matsubara basis): `pip install sparse-ir` for
+`matsubara_basis = "ir"` in the dynamic Eliashberg solver.
 
 ## Quick Start
 

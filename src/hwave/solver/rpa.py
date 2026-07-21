@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 #import read_input_k
 import hwave.qlmsio.read_input_k as read_input_k
+import hwave.qlmsio.wan90 as wan90
+from . import backend as _bk
+from . import fold
+from . import matsubara as _ms
 
 
 def validate_chi0q_index_convention(data, enable_spin_orbital, file_name=""):
@@ -274,87 +278,23 @@ class Interaction:
 
     def _reshape_geometry(self, geom):
         logger.debug(">>> Interaction._reshape_geometry")
-
-        Bx,By,Bz = self.lattice.subshape
-        bvol = self.lattice.subvol
-
-        norb = geom['norb']
-
-        geom_new = {}
-        geom_new['norb'] = geom['norb'] * bvol
-        geom_new['rvec'] = np.matmul(np.diag([Bx, By, Bz]), geom['rvec'])
-
-        sc = np.array([1.0/Bx, 1.0/By, 1.0/Bz])
-        cw = [ sc * geom['center'][k] for k in range(norb) ]
-
-        centerv = np.zeros((norb * bvol, 3), dtype=np.float64)
-        k = 0
-        for bz,by,bx in itertools.product(range(Bz),range(By),range(Bx)):
-            for i in range(norb):
-                centerv[k] = cw[i] + np.array([bx, by, bz]) * sc
-                k += 1
-        geom_new['center'] = centerv
-
-        return geom_new
+        return fold.reshape_geometry(geom, self.lattice.subshape)
 
     def _reshape_interaction(self, ham, enable_spin_orbital):
         logger.debug(">>> Interaction._reshape_interaction")
 
-        Bx,By,Bz = self.lattice.subshape
-        nx,ny,nz = self.lattice.shape
-
-        # In SO mode, geom norb is the spin-orbital count; interactions use
-        # physical orbital indices, so the stride for non-SO folding is norb_phys.
+        # In SO mode, geom norb is the spin-orbital count; two-body
+        # interactions use physical orbital indices, so the stride for the
+        # non-SO fold is the physical count (see fold.reshape_interaction,
+        # the single definition shared with UHFk).
         geom_norb_orig = self.param_ham_orig["Geometry"]["norb"]
-        norb_orig = geom_norb_orig  # SO count (used by _reshape_orbit_spin)
-        # physical count (stride for non-SO / physical-orbital-indexed terms)
         norb_phys_orig = _so_physical_norb(geom_norb_orig, self.enable_spin_orbital)
 
-        def _reshape_orbit_(a, x):
-            return a + norb_phys_orig * ( x[0] + Bx * (x[1] + By * (x[2])))
-
-        def _reshape_orbit_spin(a, x):
-            a_, s_ = a%norb_orig, a//norb_orig
-            return a_ + norb_orig * ( x[0] + Bx * (x[1] + By * (x[2] + Bz * s_)))
-
-        if enable_spin_orbital:
-            _reshape_orbit = _reshape_orbit_spin
-        else:
-            _reshape_orbit = _reshape_orbit_
-
-        def _round(x, n):
-            return x % n if x >= 0 else x % -n
-
-        ham_new = {}
-        for (irvec,orbvec), v in ham.items():
-            rx,ry,rz = irvec
-            alpha,beta = orbvec
-
-            for bz,by,bx in itertools.product(range(Bz),range(By),range(Bx)):
-
-                # original cell index of both endes
-                #   x0 -> x1=x0+r
-                x0,y0,z0 = bx, by, bz
-                x1,y1,z1 = x0 + rx, y0 + ry, z0 + rz
-
-                # decompose into supercell-index and cell-index within supercell
-                #   x0 = 0 + x0
-                #   x1 = X + xr
-                xx1,xr1 = x1 // Bx, x1 % Bx
-                yy1,yr1 = y1 // By, y1 % By
-                zz1,zr1 = z1 // Bz, z1 % Bz
-
-                # find orbital index within supercell
-                aa = _reshape_orbit(alpha,(x0,y0,z0))
-                bb = _reshape_orbit(beta, (xr1,yr1,zr1))
-
-                # check wrap-around: maybe overwritten by duplicate entries
-                ir = (_round(xx1, nx), _round(yy1, ny), _round(zz1, nz))
-                ov = (aa, bb)
-
-                ham_new[(ir, ov)] = v
-
-        return ham_new
+        return fold.reshape_interaction(
+            ham, self.lattice.subshape, self.lattice.shape,
+            norb_so_orig=geom_norb_orig,
+            norb_phys_orig=norb_phys_orig,
+            enable_spin_orbital=enable_spin_orbital)
 
     def _export_interaction(self, type, file_name):
         logger.debug(">>> Interaction._export_interaction")
@@ -427,7 +367,10 @@ class Interaction:
                         .format(orbvec, nd))
                 a = _so_interleaved_to_spinblock(orbvec[0])
                 b = _so_interleaved_to_spinblock(orbvec[1])
-                tab_r[(*irvec, a, b)] = v
+                # accumulate: R and R+-L are distinct bonds that wrap onto
+                # the same array slot when the hopping range reaches the
+                # lattice size (numpy negative indexing)
+                tab_r[(*irvec, a, b)] += v
 
             # Fourier transform
             tab_q = FFT.ifftn(tab_r, axes=(0,1,2)) * nvol
@@ -440,7 +383,8 @@ class Interaction:
 
             for (irvec,orbvec), v in self.param_ham["Transfer"].items():
                 if orbvec[0] < norb and orbvec[1] < norb:
-                    tab_r[(*irvec,*orbvec)] = v
+                    # accumulate: wrap-around R vectors share the array slot
+                    tab_r[(*irvec,*orbvec)] += v
                 else:
                     pass  # skip spin dependence
 
@@ -469,7 +413,8 @@ class Interaction:
 
             for (irvec,orbvec), v in self.param_ham["Extern"].items():
                 if orbvec[0] < norb and orbvec[1] < norb:
-                    hab_r[(*irvec,*orbvec)] = v
+                    # accumulate: wrap-around R vectors share the array slot
+                    hab_r[(*irvec,*orbvec)] += v
                 else:
                     pass  # skip spin dependence
 
@@ -511,10 +456,12 @@ class Interaction:
         }
 
         # coulomb-type interactions
-        def _append_inter(type):
+        def _append_inter(type, tbl=None):
             logger.debug("_append_inter {}".format(type))
             spins = spin_table[type]
-            for (irvec,orbvec), v in self.param_ham[type].items():
+            if tbl is None:
+                tbl = self.param_ham[type]
+            for (irvec,orbvec), v in tbl.items():
                 a, b = orbvec
                 for spinvec, w in spins.items():
                     s1,s2,s3,s4 = spinvec
@@ -538,6 +485,26 @@ class Interaction:
                         # beta beta' alpha alpha'
                         orb = (s4, b, s3, a, s1, a, s2, b)
                         ham_r[(*irvec, *orb)] += v * w
+
+        if 'Coulomb' in self.param_ham.keys():
+            # The aggregate 'Coulomb' input provides both the intra and inter
+            # parts (shared decomposition, see wan90.split_coulomb).
+            # Combining it with explicit CoulombIntra/CoulombInter is
+            # ambiguous.
+            if ('CoulombIntra' in self.param_ham.keys()
+                    or 'CoulombInter' in self.param_ham.keys()):
+                logger.error(
+                    "Coulomb cannot be specified together with "
+                    "CoulombIntra or CoulombInter")
+                sys.exit(1)
+
+            coulomb_intra, coulomb_inter = wan90.split_coulomb(
+                self.param_ham['Coulomb'])
+
+            _append_inter('CoulombIntra', coulomb_intra)
+            _append_inter('CoulombInter', coulomb_inter)
+            self._has_interaction = True
+            self._has_interaction_coulomb = True
 
         if 'CoulombIntra' in self.param_ham.keys():
             _append_inter('CoulombIntra')
@@ -670,6 +637,20 @@ class RPA:
 
         self.coeff_tail = self.param_mod.get("coeff_tail", 0.0)
         self.ext = self.param_mod.get("coeff_extern", 0.0)
+
+        # GPU (CuPy) execution and CPU spatial-FFT parallelism. use_gpu is the
+        # user request; consumers resolve it via backend.get_backend (warn and
+        # fall back to numpy when CuPy / a CUDA device is unavailable).
+        # fft_workers defaults to 1 (the serial numpy path, bit-compatible
+        # with previous releases); scipy-parallel FFTs are opt-in.
+        self.use_gpu = _bk.as_bool(self.param_mod.get("gpu", False))
+        # Strict GPU mode: when gpu_required=true, get_backend raises instead of
+        # falling back to the (much slower) CPU path if CuPy/CUDA is unusable,
+        # so a large scheduler job fails fast. Default false keeps the existing
+        # warn-and-fall-back behavior. Inherited by the FLEX solver (subclass).
+        self.gpu_required = _bk.as_bool(self.param_mod.get("gpu_required",
+                                                           False))
+        self.fft_workers = int(self.param_mod.get("fft_workers", 1))
 
         # exclusive options: mu and Ncond/filling
         have_mu = "mu" in self.param_mod.keys()
@@ -804,10 +785,28 @@ class RPA:
 
     @do_profile
     def solve(self, green_info, path_to_output):
+        """Solve the RPA equation, restoring host-backed public state.
+
+        Thin wrapper around :meth:`_solve_impl` that guarantees the solver's
+        public array attributes (``H0_eigenvalue``/``H0_eigenvector`` and the
+        stored ``green0``/``green0_tail``) are NumPy-backed after the call --
+        on normal completion AND after a GPU-path exception. Under GPU
+        execution ``_solve_impl`` converts these to CuPy in place; without the
+        ``finally`` a mid-solve error would leave a reused or inspected solver
+        object holding device arrays (issue #63).
+        """
+        try:
+            return self._solve_impl(green_info, path_to_output)
+        finally:
+            _bk.restore_host_attrs(
+                self, ("H0_eigenvalue", "H0_eigenvector",
+                       "green0", "green0_tail"))
+
+    def _solve_impl(self, green_info, path_to_output):
         """Solve the RPA equation to calculate susceptibility.
 
-        This is the main method that performs RPA calculations. It either calculates 
-        or loads chi0q, transforms interaction Hamiltonians based on spin state, 
+        This is the main method that performs RPA calculations. It either calculates
+        or loads chi0q, transforms interaction Hamiltonians based on spin state,
         and solves the RPA equation.
 
         Parameters
@@ -830,12 +829,29 @@ class RPA:
 
         beta = 1.0/self.T
 
+        # GPU (CuPy) execution: resolve the backend once. The heavy work --
+        # the bare Green's function, the chi0q FFT pair bubble, the spin
+        # inflation einsums, and the batched chiq solve -- all dispatch on
+        # their input arrays, so moving the inputs to the device here runs the
+        # whole solve on the GPU; outputs are stored back as host arrays.
+        xp, gpu_active = _bk.get_backend(self.use_gpu, logger=logger,
+                                         required=self.gpu_required)
+
         if "chi0q" in green_info and green_info["chi0q"] is not None:
             # use chi0q input
             chi0q = green_info["chi0q"]
             if chi0q.shape[0] != self.nmat:
                 logger.info("partial range in matsubara frequency: {} in {}".format(chi0q.shape[0], self.nmat))
                 #self.nmat = chi0q.shape[0]
+            if gpu_active:
+                # VRAM preflight for the externally-supplied chi0q path: the
+                # transfer below plus the same-sized chiq solve workspace.
+                # Advisory only (CuPy raises OutOfMemoryError on the actual
+                # allocation).
+                _bk.warn_if_device_memory_short(
+                    2 * chi0q.nbytes, logger,
+                    label="the RPA chiq solve (supplied chi0q)")
+                chi0q = xp.asarray(chi0q)
         else:
             self._calc_epsilon_k(green_info)
 
@@ -847,6 +863,24 @@ class RPA:
                 dist, mu = self._find_mu(Ncond, self.T)
             else:
                 mu = self.mu_value
+
+            if gpu_active:
+                logger.info("RPA: GPU backend active (CuPy); moving H0 "
+                            "eigenpairs to the device.")
+                # VRAM preflight: the largest resident device tensor is the
+                # inflated chi0q / chiq, ~ Nmat*Nvol*nd^4 complex128 in the full
+                # (rank-4 orbital) channel; the chiq solve holds a same-sized
+                # workspace. This nd^4 figure is an upper bound for the reduced/
+                # squashed (rank-2) schemes and a rough order-of-magnitude
+                # estimate otherwise -- advisory only (CuPy raises
+                # OutOfMemoryError on the actual allocation).
+                # H0_eigenvector shape = (nblock, Nvol, nd, nd).
+                nd0 = self.H0_eigenvector.shape[-1]
+                chi_bytes = self.nmat * self.lattice.nvol * (nd0 ** 4) * 16
+                _bk.warn_if_device_memory_short(
+                    2 * chi_bytes, logger, label="the RPA chi0q/chiq solve")
+                self.H0_eigenvalue = xp.asarray(self.H0_eigenvalue)
+                self.H0_eigenvector = xp.asarray(self.H0_eigenvector)
 
             green0, green0_tail = self._calc_green(beta, mu)
             #XXX
@@ -868,13 +902,18 @@ class RPA:
                 assert chi0q.shape[0] == 2
                 pass
 
-            green_info["chi0q"] = chi0q
+            green_info["chi0q"] = _bk.to_host(chi0q)
 
         if self.calc_chiq:
+            # ham_inter_q is built on the host at init; mirror it to chi0q's
+            # backend so the inflation einsums and the solve stay on one device.
+            ham_inter_q = self.ham_info.ham_inter_q
+            if gpu_active:
+                ham_inter_q = xp.asarray(ham_inter_q)
 
             if self.spin_mode == "spinful":
                 chi0q_orig = chi0q
-                ham_orig = self.ham_info.ham_inter_q
+                ham_orig = ham_inter_q
 
                 if self.calc_scheme == "reduced" or self.calc_scheme == "squashed":
                     # Treat combined spin-orbital indices as general orbitals.
@@ -882,14 +921,14 @@ class RPA:
                     # exploited by _find_block_diagonal inside _solve_rpa.
                     nvol = self.lattice.nvol
                     nd = self.nd
-                    ham = np.einsum('kaabb->kab',
+                    ham = xp.einsum('kaabb->kab',
                                     ham_orig.reshape(nvol,*(nd,)*4)).reshape(nvol,*(nd,)*2)
                 else:
                     ham = ham_orig
 
             elif self.spin_mode == "spin-diag":
                 chi0q_orig = chi0q
-                ham_orig = self.ham_info.ham_inter_q
+                ham_orig = ham_inter_q
 
                 if self.calc_scheme == "reduced":
                     nblock,nfreq,nvol,norb1,norb2 = chi0q_orig.shape
@@ -898,12 +937,12 @@ class RPA:
                     ns = self.ns
                     nd = norb * ns
 
-                    spin_tensor = np.identity(2)
-                    chi0q = np.einsum('glkab,gh->lkgahb',
+                    spin_tensor = xp.identity(2)
+                    chi0q = xp.einsum('glkab,gh->lkgahb',
                                       chi0q_orig,
                                       spin_tensor).reshape(nfreq,nvol,nd,nd)
 
-                    ham = np.einsum('kaabb->kab',
+                    ham = xp.einsum('kaabb->kab',
                                     ham_orig.reshape(nvol,*(nd,)*4)).reshape(nvol,*(nd,)*2)
 
                 elif self.calc_scheme == "squashed":
@@ -913,15 +952,15 @@ class RPA:
                     ns = self.ns
                     nd = norb * ns
 
-                    spin_tensor = np.zeros((2,2,2,2), dtype=np.int32)
+                    spin_tensor = xp.zeros((2,2,2,2), dtype=np.int32)
                     spin_tensor[0,0,0,0] = 1
                     spin_tensor[1,1,1,1] = 1
 
-                    chi0q = np.einsum('glkab,gtuv->lkgtauvb',
+                    chi0q = xp.einsum('glkab,gtuv->lkgtauvb',
                                       chi0q_orig,
                                       spin_tensor).reshape(nfreq,nvol,ns,ns,norb,ns,ns,norb)
 
-                    ham = np.einsum('ksauatbvb->ksuatvb',
+                    ham = xp.einsum('ksauatbvb->ksuatvb',
                                     ham_orig.reshape(nvol,*(ns,norb)*4)).reshape(nvol,*(ns,ns,norb)*2)
 
                 else:
@@ -931,11 +970,11 @@ class RPA:
                     ns = self.ns
                     nd = norb * ns
 
-                    spin_tensor = np.zeros((2,2,2,2), dtype=np.int32)
+                    spin_tensor = xp.zeros((2,2,2,2), dtype=np.int32)
                     spin_tensor[0,0,0,0] = 1
                     spin_tensor[1,1,1,1] = 1
 
-                    chi0q = np.einsum('glkabcd,gtuv->lkgatbucvd',
+                    chi0q = xp.einsum('glkabcd,gtuv->lkgatbucvd',
                                       chi0q_orig,
                                       spin_tensor).reshape(nfreq,nvol,nd,nd,nd,nd)
                     ham = ham_orig
@@ -943,7 +982,7 @@ class RPA:
             elif self.spin_mode == "spin-free":
                 # introduce spin degree of freedom
                 chi0q_orig = chi0q
-                ham_orig = self.ham_info.ham_inter_q
+                ham_orig = ham_inter_q
 
                 if self.calc_scheme == "reduced":
                     # alpha=alpha', beta=beta' case
@@ -953,12 +992,12 @@ class RPA:
                     ns = self.ns
                     nd = norb * ns
 
-                    spin_tensor = np.identity(ns)
-                    chi0q = np.einsum('lkab,st->lksatb',
+                    spin_tensor = xp.identity(ns)
+                    chi0q = xp.einsum('lkab,st->lksatb',
                                       chi0q_orig.reshape(nfreq,nvol,norb,norb),
                                       spin_tensor).reshape(nfreq,nvol,nd,nd)
 
-                    ham = np.einsum('ksasatbtb->ksatb',
+                    ham = xp.einsum('ksasatbtb->ksatb',
                                     ham_orig.reshape(nvol,*(ns,norb)*4)).reshape(nvol,*(nd,)*2)
 
                 elif self.calc_scheme == "squashed":
@@ -969,15 +1008,15 @@ class RPA:
                     ns = self.ns
                     nd = norb * ns
 
-                    spin_tensor = np.zeros((2,2,2,2), dtype=np.int32)
+                    spin_tensor = xp.zeros((2,2,2,2), dtype=np.int32)
                     spin_tensor[0,0,0,0] = 1
                     spin_tensor[1,1,1,1] = 1
 
-                    chi0q = np.einsum('lkab,stuv->lkstauvb',
+                    chi0q = xp.einsum('lkab,stuv->lkstauvb',
                                       chi0q_orig.reshape(nfreq,nvol,norb,norb),
                                       spin_tensor).reshape(nfreq,nvol,ns,ns,norb,ns,ns,norb)
 
-                    ham = np.einsum('ksauatbvb->ksuatvb',
+                    ham = xp.einsum('ksauatbvb->ksuatvb',
                                     ham_orig.reshape(nvol,*(ns,norb)*4)).reshape(nvol,*(ns,ns,norb)*2)
 
                 else:
@@ -988,11 +1027,11 @@ class RPA:
                     ns = self.ns
                     nd = norb * ns
 
-                    spin_tensor = np.zeros((2,2,2,2), dtype=np.int32)
+                    spin_tensor = xp.zeros((2,2,2,2), dtype=np.int32)
                     spin_tensor[0,0,0,0] = 1
                     spin_tensor[1,1,1,1] = 1
 
-                    chi0q = np.einsum('lkabcd,stuv->lksatbucvd',
+                    chi0q = xp.einsum('lkabcd,stuv->lksatbucvd',
                                       chi0q_orig.reshape(nfreq,nvol,norb,norb,norb,norb),
                                       spin_tensor).reshape(nfreq,nvol,nd,nd,nd,nd)
                     ham = ham_orig
@@ -1000,15 +1039,26 @@ class RPA:
             # solve longitudinal (ring) RPA
             sol = self._solve_rpa(chi0q, ham)
 
-            # adhoc store
-            green_info["chiq"] = sol
+            # adhoc store (as a host array: the writers are numpy)
+            green_info["chiq"] = _bk.to_host(sol)
 
             # Solve transverse (ladder) RPA if requested
             if self.calc_type == "ring+ladder":
                 chi0q_pm, ham_pm = self._build_transverse_channel(
                     chi0q_orig, ham_orig)
                 sol_pm = self._solve_rpa(chi0q_pm, ham_pm)
-                green_info["chiq_pm"] = sol_pm
+                green_info["chiq_pm"] = _bk.to_host(sol_pm)
+
+        # Restore the solver's public attributes to host arrays so the
+        # post-solve object state is backend-independent for downstream
+        # consumers (save_results, tests).
+        if gpu_active:
+            if getattr(self, "green0", None) is not None:
+                self.green0 = _bk.to_host(self.green0)
+                self.green0_tail = _bk.to_host(self.green0_tail)
+            if getattr(self, "H0_eigenvalue", None) is not None:
+                self.H0_eigenvalue = _bk.to_host(self.H0_eigenvalue)
+                self.H0_eigenvector = _bk.to_host(self.H0_eigenvector)
 
         logger.info("End RPA calculations")
         pass
@@ -1037,18 +1087,43 @@ class RPA:
 
         self._init_wavevec()
 
+        # Frequency metadata (freq_index + nmat, the full grid size of the
+        # producing run) lets consumers locate the zero bosonic frequency
+        # (original index nmat//2).  A chi0q loaded via chi0q_init passes
+        # through solve() untouched AND chiq is computed from it, so both
+        # outputs inherit the input file's frequency axis: re-save them with
+        # the metadata of the file that produced the chi0q -- stamping the
+        # CURRENT run's values would mislabel the axis.
+        def _freq_meta_kwargs(arr):
+            init_meta = getattr(self, "_chi0q_init_meta", None)
+            if init_meta is None:
+                return {"freq_index": self.freq_index, "nmat": self.nmat}
+            kwargs = {}
+            if init_meta["freq_index"] is not None:
+                kwargs["freq_index"] = init_meta["freq_index"]
+            else:
+                # The documented format guarantees a freq_index key.  For a
+                # legacy chi0q_init file without one, describe the stored
+                # axis (0..n-1) without fabricating an nmat claim; a
+                # downstream loader then treats the file explicitly as
+                # ambiguous unless its config Nmat matches.
+                kwargs["freq_index"] = np.arange(arr.shape[0])
+            if init_meta["nmat"] is not None:
+                kwargs["nmat"] = init_meta["nmat"]
+            return kwargs
+
         if "chiq" in info_outputfile.keys():
             if self.calc_chiq == True:
                 file_name = os.path.join(path_to_output, info_outputfile["chiq"])
                 save_kwargs = dict(
                     chiq = green_info["chiq"],
-                    freq_index = self.freq_index,
                     wavevector_unit = self.kvec,
                     wavevector_index = self.wavenum_table,
                     # RPA orders spin-orbital axes as spin-block (spin*norb+orb),
                     # unlike UHFk's interleaved (2*orb+spin) output; record it so
                     # consumers do not silently mix the two conventions.
                     index_convention = "spin_block",
+                    **_freq_meta_kwargs(green_info["chiq"]),
                 )
                 # transverse channel chi_+-(q), present for calc_type ring+ladder
                 if green_info.get("chiq_pm") is not None:
@@ -1060,14 +1135,15 @@ class RPA:
 
         if "chi0q" in info_outputfile.keys():
             file_name = os.path.join(path_to_output, info_outputfile["chi0q"])
-            np.savez(file_name,
-                     chi0q = green_info["chi0q"],
-                     freq_index = self.freq_index,
-                     wavevector_unit = self.kvec,
-                     wavevector_index = self.wavenum_table,
-                     # spin-orbital axes are spin-block ordered (spin*norb+orb)
-                     index_convention = "spin_block",
-                     )
+            save_kwargs = dict(
+                chi0q = green_info["chi0q"],
+                wavevector_unit = self.kvec,
+                wavevector_index = self.wavenum_table,
+                # spin-orbital axes are spin-block ordered (spin*norb+orb)
+                index_convention = "spin_block",
+                **_freq_meta_kwargs(green_info["chi0q"]),
+            )
+            np.savez(file_name, **save_kwargs)
             logger.info("save_results: save chi0q in file {}".format(file_name))
 
         pass
@@ -1200,8 +1276,28 @@ class RPA:
             logger.error("read_chi0q failed: {}".format(e))
             sys.exit(1)
 
+        # Stage 3 (design ir-matsubara-stage3.md Sec. 4): chi0q_init assumes
+        # a uniform frequency grid; sparse-node files must not fall through
+        # to the positional metadata handling below. (Outside the try block
+        # on purpose -- the except above would turn this into sys.exit.)
+        from hwave.solver.ir_axis import is_ir_native
+        if is_ir_native(data):
+            raise ValueError(
+                "file '{}' holds sparse-IR node data "
+                "(frequency_grid=sparse_ir_nodes); chi0q_init requires a "
+                "uniform-grid file. Re-run FLEX with [mode.param] "
+                "write_densified = true.".format(file_name))
+
         validate_chi0q_index_convention(
             data, self.ham_info.enable_spin_orbital, file_name)
+
+        # Keep the frequency metadata of the file that PRODUCED this chi0q:
+        # solve() passes an input chi0q through untouched, so save_results
+        # must not relabel its axis with the current run's freq_index/nmat.
+        self._chi0q_init_meta = {
+            "freq_index": data["freq_index"] if "freq_index" in data else None,
+            "nmat": int(data["nmat"]) if "nmat" in data else None,
+        }
 
         # check size
         if self.calc_scheme == "general":
@@ -1341,6 +1437,71 @@ class RPA:
         try:
             logger.info("read green from {}".format(file_name))
             data = np.load(file_name)
+        except Exception as e:
+            logger.error("read_green failed: {}".format(e))
+            sys.exit(1)
+
+        nvol = self.lattice.nvol
+        nd = self.nd
+
+        # Sublattice green_init needs folding from the original (deflated) basis
+        # into the supercell basis. The "green" key carries a fold-sign
+        # convention: since PR #35 UHFk writes it with the Green convention
+        # (within-cell offset on the FIRST orbital slot) and tags the file with
+        # green_convention="green_slot_first". Files written before #35 stored
+        # "green" with the opposite (Hamiltonian) convention and carry no tag,
+        # so folding their "green" key here would be SILENTLY WRONG (issue #36).
+        #
+        # The "green_sublattice" array, when present, is the already-folded
+        # internal Green and is correct regardless of the deflate convention, so
+        # prefer it. Fall back to folding "green" only when the convention is
+        # unambiguous (new-style tag present); otherwise fail loudly.
+        #
+        # NOTE: green_sublattice is UHFk's self.Green, stored with the orbital
+        # axis in INTERLEAVED order in spin-orbital mode, whereas RPA works in
+        # SPIN-BLOCK order. For norb_phys>1 the two differ by a permutation that
+        # the "green" path applies (interleaved->spin-block) but a direct read of
+        # green_sublattice would not. So the green_sublattice shortcut is taken
+        # only in non-SO mode; SO files go through the tag-gated "green" path,
+        # which performs the remap.
+        if self.lattice.has_sublattice:
+            if (not self.ham_info.enable_spin_orbital
+                    and "green_sublattice" in data.files):
+                logger.debug("read_green: use green_sublattice (fold-convention independent)")
+                gsub = data["green_sublattice"]
+                if gsub.ndim == 5:
+                    lvol, s1, o1, s2, o2 = gsub.shape
+                    gsub = gsub.reshape(lvol, s1 * o1, s2 * o2)
+                expected = (nvol, nd, nd)
+                if gsub.shape != expected:
+                    raise ValueError(
+                        "green_sublattice array shape {} does not match expected "
+                        "{} (nvol, nd, nd)".format(gsub.shape, expected))
+                return gsub.reshape(nvol, nd, nd)
+
+            tag = str(data["green_convention"]) if "green_convention" in data.files else None
+            if tag != "green_slot_first":
+                if "green_sublattice" in data.files:
+                    # SO mode reached here: green_sublattice exists but is stored
+                    # interleaved (RPA is spin-block) and folded in UHFk's
+                    # orbital order, so it cannot be consumed directly. The "green"
+                    # key needs the tag to be folded with the correct sign.
+                    reason = ("green_sublattice is present but cannot be used "
+                              "directly in spin-orbital mode (it is interleaved "
+                              "and folded in UHFk order), and the 'green' key "
+                              "carries no green_convention tag")
+                else:
+                    reason = ("no green_convention tag and no green_sublattice "
+                              "array")
+                logger.error(
+                    "read_green: {} is a sublattice green file with an "
+                    "ambiguous/old fold convention (green_convention={}; {}). "
+                    "Folding its 'green' key could be silently wrong (see issue "
+                    "#36). Regenerate green_init with the current UHFk.".format(
+                        file_name, tag, reason))
+                sys.exit(1)
+
+        try:
             green = data["green"]
             logger.debug("read_green: shape={}".format(green.shape))
         except Exception as e:
@@ -1473,9 +1634,6 @@ class RPA:
 
         # Gather using advanced indexing
         # green[jsite, s, a, t, b] -> green_sub[isite, s, aa, t, bb]
-        green_sub = green[jsite_map][:, :, :, :, a_src, :, :][:, :, :, :, :, :, b_src]
-        # Shape: (Nvol, norb, norb, ns, norb, ns, norb) - need to select diagonal
-        # Use explicit indexing for clarity
         green_sub = green[
             jsite_map[:, :, :, np.newaxis, np.newaxis],   # (Nvol, norb, norb, 1, 1)
             np.arange(ns)[np.newaxis, np.newaxis, np.newaxis, :, np.newaxis],  # s
@@ -1681,6 +1839,7 @@ class RPA:
         # load eigenvalues and eigenvectors
         ew = self.H0_eigenvalue
         ev = self.H0_eigenvector
+        xp = _bk.array_module_of(ew)
 
         nx,ny,nz = self.lattice.shape
 
@@ -1689,7 +1848,7 @@ class RPA:
 
         nmat = self.nmat
 
-        iomega = (np.arange(nmat) * 2 + 1 - nmat) * np.pi / beta
+        iomega = (xp.arange(nmat) * 2 + 1 - nmat) * np.pi / beta
 
         # 1 / (iw_{n} - (e_i(k) - mu)) -> g[g,l,k,i] via broadcasting
         # iomega: (nmat,), ew: (nblock, nvol, nd)
@@ -1713,7 +1872,7 @@ class RPA:
 
         # G_ab(k,iw_n) = sum_j V_{a,j} V*_{b,j} * g_j
         # = (V * g) @ V†  -- use matmul (BLAS) instead of einsum
-        ev_conj_t = np.conj(ev).swapaxes(-2, -1)  # (nblock,nvol,nd,nd): V†[g,k]
+        ev_conj_t = xp.conj(ev).swapaxes(-2, -1)  # (nblock,nvol,nd,nd): V†[g,k]
 
         # Vg = V * g: broadcast g into eigenvector columns
         Vg = ev[:, np.newaxis, :, :, :] * g[:, :, :, np.newaxis, :]  # (nblock,nmat,nvol,nd,nd)
@@ -1722,7 +1881,7 @@ class RPA:
         # Tail: G_tail = V @ V† * aa * 0.5 * beta = I * aa * 0.5 * beta (unitarity)
         # But original code retains V V† form for non-complete basis cases
         VVt = ev @ ev_conj_t  # (nblock,nvol,nd,nd)
-        green_tail = VVt[:, np.newaxis, :, :, :] * np.ones((1, nmat, 1, 1, 1)) * aa * 0.5 * beta
+        green_tail = VVt[:, np.newaxis, :, :, :] * xp.ones((1, nmat, 1, 1, 1)) * aa * 0.5 * beta
 
         return green, green_tail
 
@@ -1759,6 +1918,9 @@ class RPA:
         """
         logger.debug(">>> RPA._calc_chi0q")
 
+        xp = _bk.array_module_of(green_kw)
+        workers = getattr(self, "fft_workers", 1)
+
         nx,ny,nz = self.lattice.shape
         #nvol = self.lattice.nvol
 
@@ -1767,22 +1929,20 @@ class RPA:
         assert nmat == self.nmat
 
         # Fourier transform from Matsubara freq to imaginary time
-        omg = np.exp(-1j * np.pi * (1.0/nmat - 1.0) * np.arange(nmat))
-
-        # In-place multiply to avoid extra copy
         green_flat = green_kw.reshape(nblock, nmat, nvol * nd * nd)
-        green_kt = FFT.fft(green_flat, axis=1)
-        green_kt *= omg[np.newaxis, :, np.newaxis]
+        green_kt = _ms.fermion_to_tau(green_flat, axis=1)
         green_kt = green_kt.reshape(nblock, nmat, nx, ny, nz, nd, nd)
         green_kt -= green0_tail.reshape(nblock, nmat, nx, ny, nz, nd, nd)
 
         # Fourier transform from wave number space to coordinate space
-        green_rt = FFT.ifftn(green_kt.reshape(nblock, nmat, nx, ny, nz, nd * nd), axes=(2, 3, 4))
+        green_rt = _bk.spatial_ifftn(
+            green_kt.reshape(nblock, nmat, nx, ny, nz, nd * nd),
+            axes=(2, 3, 4), workers=workers)
 
         # calculate chi0 in real space and imaginary time
-        green_rev = np.flip(np.roll(green_rt, -1, axis=(1, 2, 3, 4)), axis=(1, 2, 3, 4)).reshape(nblock, nmat, nvol, nd, nd)
+        green_rev = xp.flip(xp.roll(green_rt, -1, axis=(1, 2, 3, 4)), axis=(1, 2, 3, 4)).reshape(nblock, nmat, nvol, nd, nd)
 
-        sgn = np.full(nmat, -1)
+        sgn = xp.full(nmat, -1)
         sgn[0] = 1
 
         if self.enable_reduced:
@@ -1810,14 +1970,14 @@ class RPA:
             nds = nd ** 4
 
         # Fourier transform to wave number space
-        chi0_qt = FFT.fftn(chi0_rt.reshape(nblock, nmat, nx, ny, nz, nds), axes=(2, 3, 4))
+        chi0_qt = _bk.spatial_fftn(
+            chi0_rt.reshape(nblock, nmat, nx, ny, nz, nds),
+            axes=(2, 3, 4), workers=workers)
 
         # Fourier transform to matsubara freq
-        omg2 = np.exp(1j * np.pi * (-1) * np.arange(nmat))
-
         chi0_qt_flat = chi0_qt.reshape(nblock, nmat, nvol * nds)
-        chi0_qt_flat *= omg2[np.newaxis, :, np.newaxis]
-        chi0_qw = FFT.ifft(chi0_qt_flat, axis=1).reshape(nblock, nmat, nvol, *nd_shape) * (-1.0 / beta)
+        chi0_qw = _ms.tau_to_boson(chi0_qt_flat, axis=1).reshape(
+            nblock, nmat, nvol, *nd_shape) * (-1.0 / beta)
 
         return chi0_qw
 
@@ -1846,30 +2006,34 @@ class RPA:
         """
         logger.debug(">>> RPA._calc_chi0q_transverse")
 
+        xp = _bk.array_module_of(green_kw)
+        workers = getattr(self, "fft_workers", 1)
+
         nx, ny, nz = self.lattice.shape
         nblock, nmat, nvol, nd, nd2 = green_kw.shape
         assert nblock == 2, "Transverse chi0 requires spin-diag (nblock=2)"
 
         # Fourier transform from Matsubara freq to imaginary time
-        omg = np.exp(-1j * np.pi * (1.0/nmat - 1.0) * np.arange(nmat))
+        omg = xp.exp(-1j * np.pi * (1.0/nmat - 1.0) * xp.arange(nmat))
 
-        green_kt = (FFT.fft(green_kw.reshape(nblock, nmat, nvol*nd*nd), axis=1)
+        green_kt = (xp.fft.fft(green_kw.reshape(nblock, nmat, nvol*nd*nd), axis=1)
                     * omg[np.newaxis, :, np.newaxis]
                     ).reshape(nblock, nmat, nx, ny, nz, nd, nd)
         green_kt -= green0_tail.reshape(nblock, nmat, nx, ny, nz, nd, nd)
 
         # Fourier transform from k-space to real space
-        green_rt = FFT.ifftn(green_kt.reshape(nblock, nmat, nx, ny, nz, nd*nd),
-                             axes=(2, 3, 4)).reshape(nblock, nmat, nvol, nd, nd)
+        green_rt = _bk.spatial_ifftn(
+            green_kt.reshape(nblock, nmat, nx, ny, nz, nd*nd),
+            axes=(2, 3, 4), workers=workers).reshape(nblock, nmat, nvol, nd, nd)
 
         # G_↓(-r,-τ): flip r and τ, then shift
-        green_dn_rev = np.flip(np.roll(green_rt[1:2], -1, axis=(1, 2, 3, 4)),
+        green_dn_rev = xp.flip(xp.roll(green_rt[1:2], -1, axis=(1, 2, 3, 4)),
                                axis=(1, 2, 3, 4)).reshape(nmat, nvol, nd, nd)
 
         # G_↑(r,τ)
         green_up_rt = green_rt[0].reshape(nmat, nvol, nd, nd)
 
-        sgn = np.full(nmat, -1)
+        sgn = xp.full(nmat, -1)
         sgn[0] = 1
 
         if self.enable_reduced:
@@ -1882,17 +2046,18 @@ class RPA:
             nds = nd**2
         else:
             # chi0_+-[l,r,a,c,b,d] = G_↑[l,r,a,b] * G_↓_rev[l,r,d,c] * sgn[l]
-            chi0_rt = np.einsum('lrab,lrdc,l->lracbd',
+            chi0_rt = xp.einsum('lrab,lrdc,l->lracbd',
                                 green_up_rt, green_dn_rev, sgn)
             nd_shape = (nd, nd, nd, nd)
             nds = nd**4
 
         # Fourier transform to k-space
-        chi0_qt = FFT.fftn(chi0_rt.reshape(nmat, nx, ny, nz, nds), axes=(1, 2, 3))
+        chi0_qt = _bk.spatial_fftn(chi0_rt.reshape(nmat, nx, ny, nz, nds),
+                                   axes=(1, 2, 3), workers=workers)
 
         # Fourier transform to Matsubara frequency
-        omg = np.exp(1j * np.pi * (-1) * np.arange(nmat))
-        chi0_qw = FFT.ifft(
+        omg = xp.exp(1j * np.pi * (-1) * xp.arange(nmat))
+        chi0_qw = xp.fft.ifft(
             chi0_qt.reshape(nmat, nvol*nds) * omg[:, np.newaxis],
             axis=0).reshape(nmat, nvol, *nd_shape) * (-1.0/beta)
 
@@ -1926,6 +2091,7 @@ class RPA:
         ham_pm : ndarray
             Transverse vertex, shape (nvol, norb, norb, norb, norb).
         """
+        xp = _bk.array_module_of(chi0q_orig)
         norb = self.norb
         ns = self.ns
         nd = norb * ns
@@ -1942,7 +2108,7 @@ class RPA:
                 # chi0q_pm[:, :, l1, l2, l3, l2] = chi0q_orig[:, :, l1, l3]
                 # i.e., delta_{l2,l4} structure
                 nfreq, nvol_c, n1, n2 = chi0q_orig.shape
-                chi0q_pm = np.zeros((nfreq, nvol_c, norb, norb, norb, norb),
+                chi0q_pm = xp.zeros((nfreq, nvol_c, norb, norb, norb, norb),
                                     dtype=np.complex128)
                 # Vectorized: broadcast chi0q_orig into diagonal l2=l4 positions
                 for l2 in range(norb):
@@ -1964,7 +2130,7 @@ class RPA:
                 # Expand reduced to general if needed for vertex contraction
                 if self.enable_reduced and chi0q_pm.ndim == 4:
                     nfreq, nvol_c, n1, n2 = chi0q_pm.shape
-                    chi0q_pm_gen = np.zeros(
+                    chi0q_pm_gen = xp.zeros(
                         (nfreq, nvol_c, norb, norb, norb, norb),
                         dtype=np.complex128)
                     for l2 in range(norb):
@@ -2081,10 +2247,12 @@ class RPA:
         """
         logger.debug(">>> RPA._solve_rpa")
 
+        xp = _bk.array_module_of(chi0q)
+
         nvol = self.lattice.nvol
         nmat = chi0q.shape[0]
         chi_shape = chi0q.shape  # [nmat,nvol,(spin_orbital structure)]
-        ndx = np.prod(chi_shape[2:2+(len(chi_shape)-2)//2])
+        ndx = int(np.prod(chi_shape[2:2+(len(chi_shape)-2)//2]))
 
         chi0q_2d = chi0q.reshape(nmat, nvol, ndx, ndx)
         ham_2d = ham.reshape(nvol, ndx, ndx)
@@ -2100,10 +2268,12 @@ class RPA:
         #  O(nmat*nvol*ndx^3) solve. We reduce chi0q to its (ndx, ndx)
         #  connectivity first to avoid materializing a large concatenated
         #  array.)
-        conn_stack = np.stack([
-            np.sum(np.abs(ham_2d), axis=0),
-            np.sum(np.abs(chi0q_2d), axis=(0, 1)),
-        ])  # (2, ndx, ndx); _find_block_diagonal sums |.| over axis 0
+        # Block detection is pure-python graph analysis on a small (ndx, ndx)
+        # connectivity matrix, so bring the reduced connectivity to the host.
+        conn_stack = _bk.to_host(xp.stack([
+            xp.sum(xp.abs(ham_2d), axis=0),
+            xp.sum(xp.abs(chi0q_2d), axis=(0, 1)),
+        ]))  # (2, ndx, ndx); _find_block_diagonal sums |.| over axis 0
         blocks = self._find_block_diagonal(conn_stack)
 
         # Determine thread-parallel chunking for frequency axis
@@ -2121,35 +2291,37 @@ class RPA:
         # Heuristic: only parallelize for large multi-orbital problems
         # where ndx >= 16 (8+ orbitals spinful) and enough frequency points.
         # For small ndx, batched LAPACK is faster than thread pool overhead.
-        use_parallel = (n_workers > 1 and nmat >= 4 * n_workers
+        # cuSOLVER's batched solve already saturates the GPU, so the CPU
+        # thread-pool path is numpy-only.
+        use_parallel = (xp is np and n_workers > 1 and nmat >= 4 * n_workers
                         and ndx >= 16 and nmat * nvol * ndx * ndx >= 1000000)
 
         if blocks is not None and len(blocks) > 1:
             logger.info("_solve_rpa: block-diagonal structure detected, "
                         "ndx={} -> {} blocks of sizes {}".format(
                             ndx, len(blocks), [len(b) for b in blocks]))
-            sol = np.zeros_like(chi0q_2d)
+            sol = xp.zeros_like(chi0q_2d)
             for block_idx in blocks:
-                idx = np.array(block_idx)
-                ix = np.ix_(idx, idx)
+                idx = xp.array(block_idx)
+                ix = xp.ix_(idx, idx)
                 chi0q_blk = chi0q_2d[:, :, ix[0], ix[1]]
                 ham_blk = ham_2d[:, ix[0], ix[1]]
-                nb = len(idx)
+                nb = len(block_idx)
 
                 if use_parallel:
                     sol[:, :, ix[0], ix[1]] = self._solve_rpa_parallel(
                         chi0q_blk, ham_blk, nb, n_workers)
                 else:
-                    mat_blk = (np.eye(nb, dtype=np.complex128)
+                    mat_blk = (xp.eye(nb, dtype=np.complex128)
                                + (chi0q_blk @ ham_blk[np.newaxis, :, :, :]))
-                    sol[:, :, ix[0], ix[1]] = np.linalg.solve(mat_blk, chi0q_blk)
+                    sol[:, :, ix[0], ix[1]] = xp.linalg.solve(mat_blk, chi0q_blk)
         else:
             if use_parallel:
                 sol = self._solve_rpa_parallel(chi0q_2d, ham_2d, ndx, n_workers)
             else:
-                mat = (np.eye(ndx, dtype=np.complex128)
+                mat = (xp.eye(ndx, dtype=np.complex128)
                        + (chi0q_2d @ ham_2d[np.newaxis, :, :, :]))
-                sol = np.linalg.solve(mat, chi0q_2d)
+                sol = xp.linalg.solve(mat, chi0q_2d)
 
         return sol.reshape(chi_shape)
 

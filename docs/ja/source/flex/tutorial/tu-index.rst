@@ -26,6 +26,16 @@ FLEXは以下の自己無撞着ループを収束まで繰り返します:
 6. FFT畳み込みにより自己エネルギー :math:`\Sigma(\mathbf{k}, i\omega_n)` を計算
 7. 収束判定; 未収束なら1に戻る
 
+.. note::
+
+   電子数を ``filling`` / ``Ncond`` で固定する場合（``mu`` を固定しない場合）、FLEX
+   は各SCF反復で化学ポテンシャル :math:`\mu` を*ドレスされた*Green関数から解き直し、
+   自己エネルギーが成長しても目標フィリングが自己無撞着に保たれるようにします。この
+   ため各反復で ``FLEX._find_mu_dressed: mu = ...`` の行が出力され、収束した
+   :math:`\mu`（および正確な反復回数）は :math:`\mu` を非相互作用値に固定した計算とは
+   異なります。本チュートリアルに示す反復回数・収束値はすべて例示であり、バージョンや
+   環境によって多少変わり得ます。
+
 
 理論
 ----------------------------
@@ -180,7 +190,14 @@ Kanamori頂点を **保持** します。これはMochizuki--Yanase--Ogata (MYO)
 - ``T = 0.5``: 温度
 - ``CellShape = [8, 8, 1]``: 2D系の 8 x 8 k点メッシュ
 - ``Nmat = 64``: 松原周波数の数
-- ``filling = 0.5``: ハーフフィリング
+- ``filling = 0.5``: 1サイトあたりの目標電子数（ハーフフィリング）。``filling``
+  （または ``Ncond``）を指定すると、FLEX は各SCF反復でドレスドGreen関数から化学
+  ポテンシャル :math:`\mu` を解き直し、自己エネルギーが成長してもフィリングを保存
+  します。代わりに ``mu`` を指定した場合は固定されます。
+- ``coeff_tail = 1.0``（省略可）: 松原和の高振動数テール加速係数。``coeff_tail = 1``
+  は :math:`G` の厳密な :math:`1/(i\omega_n)` 係数（ユニタリ性）に一致するため、
+  結果を歪めずに ``Nmat`` に対する収束を加速します。RPAソルバーでもサポートされて
+  います。``matsubara_basis = "ir"`` の場合は不要のため無視されます。
 - ``IterationMax = 100``: SCF反復の最大回数
 - ``Mix = 0.2``: 自己エネルギー更新の混合パラメータ
   (:math:`\Sigma_{\mathrm{new}} = (1 - \alpha)\Sigma_{\mathrm{old}} + \alpha\Sigma_{\mathrm{calc}}`)
@@ -218,15 +235,16 @@ Kanamori頂点を **保持** します。これはMochizuki--Yanase--Ogata (MYO)
 .. code-block:: text
 
     FLEX iteration 1/100
+    FLEX._find_mu_dressed: mu = -0.398893
       convergence: |dSigma|/|Sigma| = 1.000e+00
     FLEX iteration 2/100
-      convergence: |dSigma|/|Sigma| = 9.827e-01
+    FLEX._find_mu_dressed: mu = -0.291966
+      convergence: |dSigma|/|Sigma| = 9.876e-01
     ...
-    FLEX iteration 72/100
-      convergence: |dSigma|/|Sigma| = 1.008e-06
-    FLEX iteration 73/100
-      convergence: |dSigma|/|Sigma| = 8.292e-07
-    FLEX converged after 73 iterations
+    FLEX iteration 64/100
+    FLEX._find_mu_dressed: mu = -0.249146
+      convergence: |dSigma|/|Sigma| = 9.241e-07
+    FLEX converged after 64 iterations
 
 
 計算結果
@@ -240,6 +258,50 @@ Kanamori頂点を **保持** します。これはMochizuki--Yanase--Ogata (MYO)
 - ``chiq.npz``: 結合感受率ファイル
 - ``sigma.npz``: 自己エネルギー :math:`\Sigma(\mathbf{k}, i\omega_n)`
 - ``green.npz``: ドレスドグリーン関数 :math:`G(\mathbf{k}, i\omega_n)`
+- ``energy.dat``: 粒子数 ``NCond``、スピン ``Sz``、収束した化学ポテンシャル
+  ``ChemicalPotential`` :math:`\mu` を記載したテキストファイル。
+
+.. note::
+
+   ``energy.dat`` 出力（``[file.output]`` の ``energy`` キーで有効化）は最終的な
+   ドレスドグリーン関数から書き出されます。:math:`\mu` 固定モード（``filling`` /
+   ``Ncond`` の代わりに ``mu`` を指定）では ``NCond`` 行がその :math:`\mu` における
+   粒子数を与えるので、複数の固定 :math:`\mu` で計算を実行すれば
+   :math:`\mu`-:math:`N` 関係が得られます。``Sz`` は常磁性（spin-free）計算では 0
+   となり、スピン依存（spin-diagonal / spinful）計算でのみ非ゼロになります。
+
+SCFループのウォームスタート（``sigma_init``）
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+FLEX はデフォルトで自己無撞着ループを :math:`\Sigma = 0` から始めます。
+``[file.input]`` の ``sigma_init`` に、以前の FLEX 計算が出力した ``sigma.npz``
+を指定すると、その自己エネルギーからループを開始します:
+
+.. code-block:: toml
+
+   [file.input]
+     sigma_init = "sigma.npz"
+
+これは磁気不安定点の近傍（低温・強いスピン揺らぎ）で特に有効です。そこでは
+:math:`\Sigma = 0` からの過渡により SCF が*振動*し（残差 ``|dSigma|/|Sigma|``
+が減少せず 1 付近で停滞）、``IterationMax`` に達しても収束しません。収束済みの
+近傍解 ― 例えば温度を段階的に下げ、各計算に直前（高 :math:`T`）の ``sigma.npz``
+を与える ― から始めれば、固定点の近くから反復が始まり振動を回避できます。種は
+現在の計算と同じ ``CellShape`` と ``Nmat`` でなければなりません（どちらも即エラー
+になります。``sigma.npz`` は ``CellShape`` を記録するため、体積が同じでも
+``[2,8,1]`` と ``[4,4,1]`` のようなアスペクト比違いも検出されます）。
+continuation スイープでは ``Nmat`` と ``CellShape`` を固定してください。
+
+.. note::
+
+   ``sigma_init`` のパスは ``[file.input] path_to_input`` からの相対で解決され
+   ます。一方、前の計算の ``sigma.npz`` は ``[file.output] path_to_output`` に
+   書き出されています。スイープでは、前の ``sigma.npz`` を入力ディレクトリに
+   コピーするか、相対パスで前の出力ディレクトリを直接指してください。例::
+
+      [file.input]
+        path_to_input = "."
+        sigma_init = "run_T0.50/output/sigma.npz"
 
 **スピン感受率** :math:`\chi_s(\mathbf{q}, i\nu_0)`:
 
@@ -353,15 +415,18 @@ Kanamori頂点を **保持** します。これはMochizuki--Yanase--Ogata (MYO)
 .. code-block:: text
 
     FLEX iteration 1/200
+    FLEX._find_mu_dressed: mu = 0.000000
       convergence: |dSigma|/|Sigma| = 1.000e+00
     FLEX iteration 2/200
+    FLEX._find_mu_dressed: mu = 0.000000
       convergence: |dSigma|/|Sigma| = 3.587e-01
     ...
-    FLEX iteration 58/200
-      convergence: |dSigma|/|Sigma| = 1.188e-06
     FLEX iteration 59/200
-      convergence: |dSigma|/|Sigma| = 9.684e-07
+    FLEX._find_mu_dressed: mu = 0.000000
+      convergence: |dSigma|/|Sigma| = 8.870e-07
     FLEX converged after 59 iterations
+
+（粒子ホール対称なハーフフィリング模型のため :math:`\mu = 0` となります。）
 
 
 計算結果
@@ -435,6 +500,11 @@ FLEXソルバーは以下の内容を持つNumPy ``.npz`` ファイルを生成�
 
 - ``chiq_s`` / ``chiq_c``: スピン / 電荷感受率、
   ``chi0q`` と同じ形状
+- ``chi_convention``: 軌道レイアウトのタグ。reduced/squashed スキームは
+  ``"kuroki"``\ （スピン軌道 reduced レイアウト）、general full-vertex スキームは
+  ``"myo"``\ （orbital-pair レイアウト）。Eliashberg ローダー（\ ``hwave_sc``\ ）は
+  このタグで軌道インデックスを解釈します。2軌道系ではスピン軌道次元と orbital-pair
+  次元が一致（ともに ``4``\ ）し形状だけでは区別できないため、このタグが必須です。
 
 ``sigma.npz``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -480,9 +550,124 @@ FLEXソルバーは ``[mode.param]`` セクションで以下のパラメータ�
      - 6
      - 収束判定基準。整数 :math:`n` の場合、閾値は :math:`10^{-n}`。
        1未満の浮動小数点数の場合、直接閾値として使用。
+   * - ``mixing_scheme``
+     - str
+     - "linear"
+     - 自己エネルギーの更新方法。``"linear"`` は従来の線形混合
+       :math:`\Sigma \leftarrow (1-\alpha)\Sigma + \alpha\Sigma_{\mathrm{new}}`。
+       ``"anderson"`` は直近の反復・残差履歴に基づく Anderson 加速
+       （Pulay/DIIS型の外挿）で、同じ固定点により少ない反復数で到達します
+       （例: :math:`U=3.5`, ``Mix=0.2`` の8×8 Hubbardで78→13反復）。
+       履歴が退化した場合は自動的に線形ステップへフォールバックします。
+   * - ``anderson_depth``
+     - int
+     - 5
+     - Anderson 加速の履歴の深さ :math:`m`。メモリは :math:`\Sigma` サイズの
+       配列 :math:`2m` 本分増加します（GPU実行時はデバイス上に保持）。
+   * - ``matsubara_basis``
+     - str
+     - "uniform"
+     - 松原軸の表現。``"uniform"``（デフォルト、従来どおり）または ``"ir"``
+       （sparse-ir の中間表現基底。χ₀ と Σ をスパースノード上でネイティブに
+       計算するため、一様FFT由来の :math:`O(\beta/N_{\mathrm{mat}})`
+       離散化アーティファクトが原理的に生じません）。``Nmat`` は出力グリッド
+       として従来どおり必要で、出力ファイルは一様グリッドへ密評価されます。
+       ``calc_scheme = "general"`` とは併用できません（v1）。オプションの
+       `sparse-ir <https://sparse-ir.readthedocs.io>`_ が必要です。μ探索は
+       :math:`n = -\mathrm{Tr}\,G(\tau=\beta^-)` の基底評価に置き換わり、
+       ``coeff_tail`` は不要（無視）になります。
+   * - ``ir_tol``
+     - float
+     - 1e-8
+     - IR基底の打ち切り精度 :math:`\varepsilon`。
+   * - ``ir_wmax``
+     - float
+     - auto
+     - IR基底の実周波数バンド幅（ハミルトニアンと同じエネルギー単位）。
+       省略時はバンド幅と相互作用スケールから自動推定（推定不能なら明示指定を
+       求めるエラー）。係数テールの減衰診断が常時走り、帯域不足は警告されます。
+   * - ``sigma_init_on_error``
+     - str
+     - "warn"
+     - IR実行で一様グリッドの ``sigma_init`` のフィット残差が ``ir_tol``
+       の100倍を超えた場合の挙動: ``"warn"`` は使用して警告、``"abort"``
+       はエラー停止、``"zero"`` はゼロ初期化に退避します。
+   * - ``write_densified``
+     - bool
+     - true
+     - IR実行専用。``true``（デフォルト）では全出力ファイルを一様 ``Nmat``
+       グリッドへ密評価して書き出します（従来形式、全ツールで可読）。
+       ``false`` では出力がスパースIRノードのまま保存され、IR実行の残りの
+       支配的コストである密評価・書き出しの固定費が消え、ファイルサイズも
+       約 ``Nmat``/L 分の1になります。IR対応の下流（動的 Eliashberg の
+       ``[eliashberg] matsubara_basis = "ir"``、および次のIR FLEX実行への
+       ``sigma_init`` 連鎖）は直接読めます。一様グリッド前提のリーダー
+       （静的 ``hwave_sc``、``chi0q_init``、旧解析スクリプト）は明示エラーで
+       停止します。下の注意も参照してください。
+   * - ``gpu``
+     - bool
+     - false
+     - ``true`` で SCF ループ（dressed G、chi0q、chiq、V_eff、自己エネルギー）を
+       GPU（CuPy）で実行します。CuPy または CUDA デバイスが無い場合は警告を出して
+       CPU（numpy）実行へフォールバックします（結果は同一）。化学ポテンシャル探索も
+       スピンブロックあたりの成分数が2以下（1軌道、およびスピン縮約した2軌道系など）
+       なら閉形式の固有値により GPU 上で実行され、3以上の場合のみ非エルミート
+       固有値分解を CPU で実行します。
+   * - ``fft_workers``
+     - int
+     - 1
+     - 空間 FFT のワーカースレッド数（``scipy.fft`` による並列化）。デフォルト
+       ``1`` は従来どおりの直列 numpy（並列化はオプトイン）。``-1`` で全コアを
+       使用。GPU 実行時は無視されます。複数の計算を同時に走らせる場合は
+       小さめの値に設定してください。
 
 その他のパラメータ (``T``, ``CellShape``, ``Nmat``, ``filling`` 等)
 はRPAソルバーと共通です。詳細は :ref:`Ch:Config_rpa` を参照してください。
+
+.. note::
+
+   **IR基底でFLEXを実行するには。** オプションの依存パッケージを一度
+   インストールし（``pip install sparse-ir``）、既存のFLEX入力の
+   ``[mode.param]`` に1行追加するだけです。``Nmat`` を含め他の行は
+   そのままで動作します:
+
+   .. code-block:: toml
+
+      [mode]
+      mode = "FLEX"
+      calc_scheme = "reduced"     # または "squashed"（"general" は一様グリッドのみ）
+      [mode.param]
+      CellShape = [64, 64, 1]
+      T = 0.05
+      Nmat = 4096                 # 従来どおり必要（出力グリッド）
+      matsubara_basis = "ir"      # sparse-IR 軸へのオプトイン
+      # ir_tol = 1e-8             # 省略可: 基底の打ち切り精度
+      # ir_wmax = 30.0            # 省略可: バンド幅（自動推定あり）
+
+   SCF は ``Nmat`` 個の振動数の代わりに数十個のスパースノード上で走り
+   （例: :math:`T=0.05` で 4096 → 42）、出力ファイルはすべて ``Nmat``
+   グリッドへ密評価して書き出されるため、下流のツール（動的 Eliashberg
+   ソルバーを含む）は無変更で動作します。``coeff_tail`` はこのパスでは
+   無視されます（IR基底が :math:`1/(i\omega)` テールを厳密に保持するため）。
+
+   **IRネイティブ出力。** さらに ``write_densified = false`` を指定すると
+   出力はスパースノードのまま保存されます。IRで完結するチェーン — IR FLEX
+   → 動的 Eliashberg（``[eliashberg] matsubara_basis = "ir"``）、あるいは
+   温度スイープで次のIR FLEX実行へ ``sigma_init`` で継ぐ場合（異なる温度
+   間のseedにも対応）— で使うと、密評価とファイル書き出しの固定費が完全に
+   消えます。ネイティブファイルは ``.npz`` 内の
+   ``frequency_grid = "sparse_ir_nodes"`` キーで識別できます。
+
+   .. warning::
+
+      振動数軸を位置で参照する旧解析スクリプト（例: ``Nmat/2`` の静的
+      スライス）に ``write_densified = false`` の出力を渡さないでください。
+      振動数軸は一様グリッドではなくスパースノードです。H-wave内の
+      リーダーはすべて検出して明示エラーで停止しますが、外部スクリプトは
+      検出できません。一様グリッドのファイルが必要になった場合は、
+      ``write_densified = true`` でFLEXを再実行するか（ネイティブ出力の
+      ``sigma_init`` でseedすれば安価です）、ドキュメント記載のスニペットで
+      オフライン密評価してください（英語版チュートリアル参照）。
 
 .. note::
 
@@ -601,15 +786,16 @@ Fe-As面を正方格子（1-Fe単位胞）上の :math:`d_{xz}` と
 .. code-block:: text
 
     FLEX iteration 1/200
+    FLEX._find_mu_dressed: mu = 1.562757
       convergence: |dSigma|/|Sigma| = 1.000e+00
     FLEX iteration 2/200
+    FLEX._find_mu_dressed: mu = 1.551623
       convergence: |dSigma|/|Sigma| = 7.139e-01
     ...
     FLEX iteration 62/200
-      convergence: |dSigma|/|Sigma| = 1.055e-06
-    FLEX iteration 63/200
-      convergence: |dSigma|/|Sigma| = 8.419e-07
-    FLEX converged after 63 iterations
+    FLEX._find_mu_dressed: mu = 1.512917
+      convergence: |dSigma|/|Sigma| = 8.716e-07
+    FLEX converged after 62 iterations
 
 
 計算結果

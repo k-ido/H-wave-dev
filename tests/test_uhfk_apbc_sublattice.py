@@ -42,6 +42,10 @@ def make_full_stub(cellshape, subshape, transfer_dict,
     s.ns = 2
     s.nd = s.norb * s.ns
     s.enable_spin_orbital = False
+    # _init_orbit is skipped by this stub, so mirror the attribute it sets and
+    # that _reshape_interaction reads. Non-SO here, so the physical-orbital
+    # count equals norb_orig.
+    s.norb_phys_orig = norb_orig
     s.boundary_theta = tuple(boundary_theta)
     s.boundary_periodic = all(t == 0.0 for t in boundary_theta)
 

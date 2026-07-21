@@ -11,8 +11,23 @@ Basic usage
   - scipy module
   - requests module
   - tomli module
+  - cupy module (optional; only for GPU execution with ``gpu = true`` --
+    RPA/FLEX via ``[mode.param]`` and the dynamic Eliashberg solver via
+    ``[eliashberg]``. Install the precompiled wheel matching your CUDA
+    version, e.g. ``pip install cupy-cuda12x`` for CUDA 12.x -- see the
+    `CuPy installation guide <https://docs.cupy.dev/en/stable/install.html>`_.
+    Without CuPy, ``gpu = true`` falls back to the CPU path with a warning.)
+  - sparse-ir module (optional; only for the IR-basis Matsubara axis of the
+    dynamic Eliashberg solver, ``[eliashberg] matsubara_basis = "ir"``, and
+    of the FLEX solver, ``[mode.param] matsubara_basis = "ir"``.
+    Install with ``pip install sparse-ir``; without it, ``"ir"`` is a
+    fail-fast error with this install hint.)
 
   Note that `numpy.fft <https://numpy.org/doc/stable/reference/generated/numpy.fft.fft.html>`_ is used for FFT calculations in H-wave UHFk, RPA, and FLEX modes.
+  The spatial FFTs of the RPA/FLEX/dynamic-Eliashberg solvers switch to
+  `scipy.fft <https://docs.scipy.org/doc/scipy/reference/fft.html>`_ when the
+  opt-in ``fft_workers`` parameter requests parallel FFT worker threads, and to
+  cuFFT on the GPU.
 
 - Official Page
 

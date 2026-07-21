@@ -32,6 +32,18 @@ until convergence:
    FFT convolution.
 7. Check convergence; if not converged, go to step 1.
 
+.. note::
+
+   When the electron number is fixed through ``filling`` / ``Ncond`` (rather
+   than a fixed ``mu``), FLEX re-solves the chemical potential :math:`\mu` from
+   the *dressed* Green function at every SCF iteration so that the target
+   filling is maintained self-consistently as the self-energy grows.  A
+   ``FLEX._find_mu_dressed: mu = ...`` line is therefore printed each iteration,
+   and the converged :math:`\mu` (and the exact iteration count) differ from a
+   calculation that keeps :math:`\mu` fixed at its non-interacting value.  All
+   iteration counts and convergence values shown in this tutorial are
+   illustrative and may vary slightly with the version and platform.
+
 
 Theory
 ----------------------------
@@ -191,7 +203,16 @@ Key parameters:
 - ``T = 0.5``: Temperature.
 - ``CellShape = [8, 8, 1]``: 8 x 8 k-point mesh for a 2D system.
 - ``Nmat = 64``: Number of Matsubara frequencies.
-- ``filling = 0.5``: Half filling.
+- ``filling = 0.5``: target electron number per site (half filling). Specifying
+  ``filling`` (or ``Ncond``) makes FLEX re-solve the chemical potential
+  :math:`\mu` from the dressed Green's function at every SCF iteration so the
+  filling is conserved as the self-energy grows; specifying ``mu`` instead holds
+  it fixed.
+- ``coeff_tail = 1.0`` (optional): high-frequency tail-acceleration coefficient
+  for the Matsubara sums. ``coeff_tail = 1`` matches the exact
+  :math:`1/(i\omega_n)` coefficient of :math:`G` (unitarity), so it accelerates
+  convergence in ``Nmat`` without biasing the result. Also supported by the RPA
+  solver. Ignored (unnecessary) when ``matsubara_basis = "ir"``.
 - ``IterationMax = 100``: Maximum number of SCF iterations.
 - ``Mix = 0.2``: Mixing parameter for self-energy update
   (:math:`\Sigma_{\mathrm{new}} = (1 - \alpha)\Sigma_{\mathrm{old}} + \alpha\Sigma_{\mathrm{calc}}`).
@@ -230,15 +251,16 @@ The output log shows the SCF convergence:
 .. code-block:: text
 
     FLEX iteration 1/100
+    FLEX._find_mu_dressed: mu = -0.398893
       convergence: |dSigma|/|Sigma| = 1.000e+00
     FLEX iteration 2/100
-      convergence: |dSigma|/|Sigma| = 9.827e-01
+    FLEX._find_mu_dressed: mu = -0.291966
+      convergence: |dSigma|/|Sigma| = 9.876e-01
     ...
-    FLEX iteration 72/100
-      convergence: |dSigma|/|Sigma| = 1.008e-06
-    FLEX iteration 73/100
-      convergence: |dSigma|/|Sigma| = 8.292e-07
-    FLEX converged after 73 iterations
+    FLEX iteration 64/100
+    FLEX._find_mu_dressed: mu = -0.249146
+      convergence: |dSigma|/|Sigma| = 9.241e-07
+    FLEX converged after 64 iterations
 
 
 Results
@@ -253,6 +275,55 @@ in the ``output`` directory:
 - ``chiq.npz``: Combined susceptibility file
 - ``sigma.npz``: Self-energy :math:`\Sigma(\mathbf{k}, i\omega_n)`
 - ``green.npz``: Dressed Green's function :math:`G(\mathbf{k}, i\omega_n)`
+- ``energy.dat``: Text file with the particle number ``NCond``, spin
+  ``Sz``, and the converged ``ChemicalPotential`` :math:`\mu`.
+
+.. note::
+
+   The ``energy.dat`` output (enabled by the ``energy`` key in
+   ``[file.output]``) is written from the final dressed Green function.  In
+   the fixed-:math:`\mu` mode (specify ``mu`` instead of ``filling`` /
+   ``Ncond``) its ``NCond`` line gives the particle number at that
+   :math:`\mu`, so running the solver at several fixed :math:`\mu` values
+   traces the :math:`\mu`-:math:`N` relation.  ``Sz`` is zero for a
+   paramagnetic (spin-free) calculation and non-zero only for
+   spin-dependent (spin-diagonal / spinful) runs.
+
+Warm-starting the SCF loop (``sigma_init``)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+By default FLEX starts the self-consistency loop from :math:`\Sigma = 0`.
+Setting ``sigma_init`` in ``[file.input]`` to a ``sigma.npz`` written by an
+earlier FLEX run instead seeds the loop from that self-energy:
+
+.. code-block:: toml
+
+   [file.input]
+     sigma_init = "sigma.npz"
+
+This is often decisive near a magnetic instability (low temperature, strong
+spin fluctuations), where the :math:`\Sigma = 0` transient makes the SCF
+*oscillate* (the residual ``|dSigma|/|Sigma|`` stalls around 1 instead of
+decreasing) and the run hits ``IterationMax`` without converging. Starting from
+a converged neighbouring solution -- for example, stepping the temperature down
+and feeding each run the previous (higher-:math:`T`) ``sigma.npz`` -- begins the
+iteration near the fixed point and avoids the oscillation. The seed must have
+the same ``CellShape`` and ``Nmat`` as the current run (both are fail-fast
+errors: ``sigma.npz`` records its ``CellShape``, so even a same-volume
+aspect-ratio change like ``[2,8,1]`` vs ``[4,4,1]`` is caught), so keep
+``Nmat`` and ``CellShape`` fixed across a continuation sweep.
+
+.. note::
+
+   The ``sigma_init`` path is resolved relative to ``[file.input]
+   path_to_input``, while the previous run wrote its ``sigma.npz`` under
+   ``[file.output] path_to_output``. In a sweep, either copy the previous
+   ``sigma.npz`` into the input directory, or point ``sigma_init`` at the
+   previous output directory with a relative path, e.g.::
+
+      [file.input]
+        path_to_input = "."
+        sigma_init = "run_T0.50/output/sigma.npz"
 
 **Spin susceptibility** :math:`\chi_s(\mathbf{q}, i\nu_0)`:
 
@@ -370,15 +441,18 @@ Run the calculation
 .. code-block:: text
 
     FLEX iteration 1/200
+    FLEX._find_mu_dressed: mu = 0.000000
       convergence: |dSigma|/|Sigma| = 1.000e+00
     FLEX iteration 2/200
+    FLEX._find_mu_dressed: mu = 0.000000
       convergence: |dSigma|/|Sigma| = 3.587e-01
     ...
-    FLEX iteration 58/200
-      convergence: |dSigma|/|Sigma| = 1.188e-06
     FLEX iteration 59/200
-      convergence: |dSigma|/|Sigma| = 9.684e-07
+    FLEX._find_mu_dressed: mu = 0.000000
+      convergence: |dSigma|/|Sigma| = 8.870e-07
     FLEX converged after 59 iterations
+
+(This is a particle-hole symmetric half-filled model, so :math:`\mu = 0`.)
 
 
 Results
@@ -453,6 +527,12 @@ The FLEX solver produces NumPy ``.npz`` files with the following contents:
 
 - ``chiq_s`` / ``chiq_c``: Spin / charge susceptibility,
   same shape as ``chi0q``.
+- ``chi_convention``: orbital-layout tag, ``"kuroki"`` for the
+  reduced/squashed schemes (spin-orbital reduced layout) or ``"myo"`` for the
+  general full-vertex scheme (orbital-pair layout). The Eliashberg loader
+  (``hwave_sc``) uses this tag to interpret the orbital indices; it is
+  essential for two-orbital systems, where the spin-orbital and orbital-pair
+  dimensions coincide (both ``4``) and shape alone is ambiguous.
 
 ``sigma.npz``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -500,9 +580,145 @@ The FLEX solver accepts the following parameters in the
      - 6
      - Convergence criterion. If integer :math:`n`, the threshold is
        :math:`10^{-n}`. If float < 1, used directly as threshold.
+   * - ``mixing_scheme``
+     - str
+     - "linear"
+     - Self-energy update scheme. ``"linear"`` is the conventional linear
+       mixing :math:`\Sigma \leftarrow (1-\alpha)\Sigma +
+       \alpha\Sigma_{\mathrm{new}}`. ``"anderson"`` enables Anderson
+       acceleration (Pulay/DIIS-type extrapolation over a short
+       iterate/residual history), which reaches the same fixed point in far
+       fewer iterations (e.g. 78 -> 13 on the 8x8 Hubbard benchmark at
+       :math:`U=3.5`, ``Mix=0.2``). Falls back to a plain linear step
+       automatically if the history becomes degenerate.
+   * - ``anderson_depth``
+     - int
+     - 5
+     - History depth :math:`m` of the Anderson acceleration. Memory grows by
+       :math:`2m` sigma-sized arrays (kept on the device under GPU
+       execution).
+   * - ``matsubara_basis``
+     - str
+     - "uniform"
+     - Matsubara-axis representation: ``"uniform"`` (default, unchanged) or
+       ``"ir"`` (the sparse-ir intermediate representation; chi0 and Sigma
+       are computed NATIVELY on sparse nodes, so the uniform-FFT
+       :math:`O(\beta/N_{\mathrm{mat}})` discretization artifacts do not
+       arise by construction). ``Nmat`` keeps its role as the output grid
+       (all output files are densified onto it). Not combinable with
+       ``calc_scheme = "general"`` (v1). Requires the optional
+       `sparse-ir <https://sparse-ir.readthedocs.io>`_ package. The mu
+       search becomes the basis evaluation of
+       :math:`n = -\mathrm{Tr}\,G(\tau=\beta^-)`, and ``coeff_tail`` is
+       unnecessary (ignored).
+   * - ``ir_tol``
+     - float
+     - 1e-8
+     - IR basis cutoff accuracy.
+   * - ``ir_wmax``
+     - float
+     - auto
+     - Real-frequency bandwidth of the IR basis (same energy units as the
+       Hamiltonian); auto-estimated from the band range and interaction
+       scale when omitted (a fail-fast error asks for an explicit value if
+       the estimate cannot be formed). An always-on coefficient-decay
+       diagnostic warns when the bandwidth is insufficient.
+   * - ``sigma_init_on_error``
+     - str
+     - "warn"
+     - Behavior when the IR fit residual of a (uniform-grid) ``sigma_init``
+       exceeds 100x ``ir_tol``: ``"warn"`` (use it, warn), ``"abort"``, or
+       ``"zero"`` (fall back to the zero start).
+   * - ``write_densified``
+     - bool
+     - true
+     - IR runs only. ``true`` (default): all output files are densified
+       onto the uniform ``Nmat`` grid (unchanged format, readable by every
+       tool). ``false``: outputs stay on the sparse IR nodes — the fixed
+       densify+write cost disappears (the dominant remaining cost of an IR
+       run), files shrink by ~``Nmat``/L, and downstream IR-aware
+       consumers (the dynamic Eliashberg solver with
+       ``[eliashberg] matsubara_basis = "ir"``, and ``sigma_init``
+       chaining into another IR FLEX run) read them directly. Uniform-only
+       readers (static ``hwave_sc``, ``chi0q_init``, legacy scripts)
+       reject such files with an explicit error. See the note below.
+   * - ``gpu``
+     - bool
+     - false
+     - Set ``true`` to run the SCF loop (dressed G, chi0q, chiq, V_eff, and
+       the self-energy) on a GPU via CuPy. When CuPy or a CUDA device is
+       unavailable the solver warns and falls back to the CPU (numpy) path
+       (identical result). The chemical-potential search also runs on the GPU
+       via closed-form eigenvalues when each spin block has at most 2
+       components (single-orbital, or e.g. a spin-reduced two-orbital model);
+       only larger blocks fall back to a host non-Hermitian
+       eigendecomposition.
+   * - ``fft_workers``
+     - int
+     - 1
+     - Number of worker threads for the spatial FFTs (parallelized via
+       ``scipy.fft``). The default ``1`` keeps the serial numpy path,
+       unchanged from previous releases (opt-in); ``-1`` uses all cores.
+       Ignored on the GPU. Set a smaller number when running several
+       calculations concurrently.
 
 All other parameters (``T``, ``CellShape``, ``Nmat``, ``filling``, etc.)
 are shared with the RPA solver. See :ref:`Ch:Config_rpa` for details.
+
+.. note::
+
+   **Running FLEX on the IR basis.** Install the optional dependency once
+   (``pip install sparse-ir``), then add a single line under
+   ``[mode.param]`` of any existing FLEX input — every other line, including
+   ``Nmat``, stays as it is:
+
+   .. code-block:: toml
+
+      [mode]
+      mode = "FLEX"
+      calc_scheme = "reduced"     # or "squashed"; "general" stays uniform
+      [mode.param]
+      CellShape = [64, 64, 1]
+      T = 0.05
+      Nmat = 4096                 # still required: the output grid
+      matsubara_basis = "ir"      # opt in to the sparse-IR axis
+      # ir_tol = 1e-8             # optional: basis cutoff accuracy
+      # ir_wmax = 30.0            # optional: bandwidth (auto-estimated)
+
+   The SCF then runs on a few dozen sparse nodes instead of ``Nmat``
+   frequencies (e.g. 4096 -> 42 at :math:`T=0.05`), while all output files
+   are densified back onto the ``Nmat`` grid, so downstream tools (including
+   the dynamic Eliashberg solver) work unchanged. ``coeff_tail`` is ignored
+   on this path — the IR basis carries the :math:`1/(i\omega)` tail exactly.
+
+   **IR-native outputs.** Adding ``write_densified = false`` keeps the
+   outputs on the sparse nodes. Use it for pure IR chains — IR FLEX
+   feeding the dynamic Eliashberg solver
+   (``[eliashberg] matsubara_basis = "ir"``) or seeding the next IR FLEX
+   run of a temperature sweep via ``sigma_init`` (cross-temperature seeds
+   are supported) — where it removes the fixed densification and file-size
+   cost entirely. You can recognize such a file by the
+   ``frequency_grid = "sparse_ir_nodes"`` key in the ``.npz``.
+
+   .. warning::
+
+      Do **not** point legacy analysis scripts (anything that indexes the
+      frequency axis positionally, e.g. the static slice at ``Nmat/2``) at
+      ``write_densified = false`` outputs — the frequency axis holds
+      sparse nodes, not the uniform grid. All H-wave readers detect this
+      and stop with an explicit error; external scripts may not. To
+      recover a uniform-grid file, re-run FLEX with
+      ``write_densified = true`` (cheap: seed it with ``sigma_init`` from
+      the native run), or densify offline::
+
+         import numpy as np
+         from hwave.solver.ir_axis import IRAxis
+         d = np.load("chiq_s.npz")
+         ax = IRAxis(float(d["ir_beta"]), float(d["ir_wmax"]),
+                     float(d["ir_tol"]), str(d["ir_statistics"]))
+         c = ax.fit_from_freq_points(np.moveaxis(d["chiq_s"], 0, -1),
+                                     d["ir_freq_n"])
+         chi_u = np.moveaxis(ax.eval_to_uniform(c, nmat=4096), -1, 0)
 
 .. note::
 
@@ -619,15 +835,16 @@ Run the calculation
 .. code-block:: text
 
     FLEX iteration 1/200
+    FLEX._find_mu_dressed: mu = 1.562757
       convergence: |dSigma|/|Sigma| = 1.000e+00
     FLEX iteration 2/200
+    FLEX._find_mu_dressed: mu = 1.551623
       convergence: |dSigma|/|Sigma| = 7.139e-01
     ...
     FLEX iteration 62/200
-      convergence: |dSigma|/|Sigma| = 1.055e-06
-    FLEX iteration 63/200
-      convergence: |dSigma|/|Sigma| = 8.419e-07
-    FLEX converged after 63 iterations
+    FLEX._find_mu_dressed: mu = 1.512917
+      convergence: |dSigma|/|Sigma| = 8.716e-07
+    FLEX converged after 62 iterations
 
 
 Results
