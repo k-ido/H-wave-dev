@@ -1,4 +1,7 @@
-"""Tests for fij_builder (spec section 5.1 / 3.4)."""
+"""Tests for ``fij_builder``.
+
+See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
+"""
 from __future__ import annotations
 
 import sys, os
@@ -122,9 +125,9 @@ def test_build_fij_phys_pbc_l8_k0_only():
 
 def test_build_amplitudes_rejects_open_pair_closure():
     """If the up occupied set's (k, -k) partner does not equal the down
-    occupied set, build_amplitudes must raise (Codex spec review fix 3:
+    occupied set, build_amplitudes must raise because
     magnetic / spin-dependent occupations cannot be silently encoded by
-    the v1 (k, -k) construction)."""
+    the (k, -k) construction)."""
     import pytest
 
     L = 8
@@ -259,10 +262,8 @@ def test_pair_closure_rejects_local_band_mismatch():
 
 
 def test_a_down_uses_partner_row_eigenvector_v2_1():
-    """v2.1 spec §3.3: `A_down` reads BOTH the plane_wave AND the
-    eigenvector at the partner row (not the up's row). Locks the fix
-    from commit 74e9af9 where the down-side plane_wave index changed
-    from ``n_row`` to ``partner_n`` — the two disagree whenever the
+    """`A_down` reads BOTH the plane_wave AND the eigenvector at the
+    partner row, not the up's row. The two disagree whenever the
     partner-row eigenvector column carries a non-trivial complex
     entry (as in the SubShape=[2,1,1] APBC L=8 fixture at
     tilde_k_folded=-pi/2, where ``v[3, 3, col_down] = -0.5 + 0.5j``).
@@ -270,6 +271,7 @@ def test_a_down_uses_partner_row_eigenvector_v2_1():
     Synthetic setup: SubShape=[2,1,1] APBC L=4 with an eigenvector
     that has DIFFERENT complex phases at (row, partner) pairs so that
     "use partner row" vs "use n_row" produce distinguishable A_down.
+    See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     L_phys = 4
     subshape = np.array([2, 1, 1], dtype=np.int64)
@@ -287,7 +289,7 @@ def test_a_down_uses_partner_row_eigenvector_v2_1():
     # up at k=partner (row 1, col 0) with same trivial v so pair closure
     # holds. Down block: use v[row 0, col 2] = (1, 0), v[row 1, col 2] =
     # (1j, 1). The 1j entry on partner row's down orbital 0 is the
-    # discriminator: the correct v2.1 A_down[..., alpha=(n_row=0)] reads
+    # discriminator: the correct A_down[..., alpha=(n_row=0)] reads
     # eigenvector[partner=row 1, down_row, col=2], picking up the 1j.
     n_k0 = list(wv[:, 0]).index(0)
     n_partner0 = list(wv[:, 0]).index(-1)  # APBC partner of row 0

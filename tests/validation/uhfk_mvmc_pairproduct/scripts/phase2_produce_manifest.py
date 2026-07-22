@@ -1,29 +1,25 @@
-"""Phase 2d-f driver: pick composite element on the SCF-backed workspace,
+"""Pick a composite element on the SCF-backed workspace,
 run the mutation matrix, write ``composite_element.json``.
 
-Spec §4.3 composite condition + §4.4 mutation matrix + §6.2 manifest
-(docs/superpowers/specs/2026-07-09-uhfk-mvmc-pairproduct-general-v36-design.md).
-v3.7 extends this with the §4 addendum (per-direction dr requirement)
-and the §4b 30-entry per-direction mutation matrix
-(docs/superpowers/specs/2026-07-12-uhfk-mvmc-pairproduct-general-v37-design.md).
+The producer supports a 10-entry whole-vector mutation matrix and a 30-entry
+per-direction mutation matrix. See
+``docs/en/source/uhfk/tools/uhfk_to_mvmc.rst`` for the validation contract.
 
-This script is a Phase 2 producer, NOT a v3.6/v3.7 gate: it runs once
+This script is a fixture producer, not a gate: it runs once
 when the fixture is prepared, and the JSON it emits is committed
-alongside the fixture. Phase 6 G4 (``soc_apbc_topology_guard.py``)
+alongside the fixture. G4 (``soc_apbc_topology_guard.py``)
 reads that JSON verbatim and re-verifies the composite + mutations on
 the fresh workspace.
 
 Schema selection is automatic from the fixture's own ``input.toml``:
 a fixture with 0 or 1 active APBC direction (``theta_d != 0`` for at
-most one ``d``) gets the v3.6 10-entry whole-vector mutation schema,
-selected and scored by the BYTE-FOR-BYTE original v3.6 algorithm
+most one ``d``) gets the 10-entry whole-vector mutation schema,
+selected and scored by the whole-vector algorithm
 (``_pick_composite_v36`` below is a mechanical parameterization of the
 original code -- same formulas, same iteration order, same tie break).
-A fixture with 2 or 3 active directions gets the v3.7 30-entry
+A fixture with 2 or 3 active directions gets the 30-entry
 per-direction schema (``_pick_composite_v37``). No CLI flag is needed:
-the shape of ``BoundaryCondition`` alone determines the schema, so the
-shipped v3.6 fixture (single-direction APBC) is unaffected by the
-v3.7 extension.
+the shape of ``BoundaryCondition`` alone determines the schema.
 """
 from __future__ import annotations
 
@@ -44,13 +40,14 @@ from tools._uhfk_to_mvmc.transfer_hermiticity import (
 
 # ---------------------------------------------------------------------
 # Load soc_apbc_topology_guard.py as a module so the SAME mutator
-# kernels the Phase 6 G4 gate uses (_gauge_lift_element,
+# kernels the G4 gate uses (_gauge_lift_element,
 # _build_A_ship_mutated, and the mutation-id tuples) drive composite
 # selection and manifest T_M / delta computation here. A single source
 # of truth for the mutation math eliminates the risk of the producer's
 # formulas silently drifting from the guard's -- exactly the failure
 # mode the guard's own shadow-copy-drift check exists to catch on the
-# shipping build_slater_orbitals side.
+# shipping build_slater_orbitals side. See
+# ``docs/en/source/uhfk/tools/uhfk_to_mvmc.rst``.
 # ---------------------------------------------------------------------
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _GUARD_PATH = os.path.join(_SCRIPTS_DIR, "soc_apbc_topology_guard.py")
@@ -61,16 +58,8 @@ guard = importlib.util.module_from_spec(_guard_spec)
 _guard_spec.loader.exec_module(guard)
 
 
-_V36_SPEC_REF = (
-    "docs/superpowers/specs/"
-    "2026-07-09-uhfk-mvmc-pairproduct-general-v36-design.md "
-    "§4.3 §4.4 §6.2"
-)
-_V37_SPEC_REF = (
-    "docs/superpowers/specs/"
-    "2026-07-12-uhfk-mvmc-pairproduct-general-v37-design.md "
-    "§4 §4b §6.2 (extends v3.6 §4.3 §4.4 §6.2)"
-)
+_V36_SPEC_REF = "docs/en/source/uhfk/tools/uhfk_to_mvmc.rst"
+_V37_SPEC_REF = "docs/en/source/uhfk/tools/uhfk_to_mvmc.rst"
 _AXIS_CHARS = "xyz"
 
 
@@ -101,9 +90,11 @@ def _sub_offset(i, site_positions, sub):
 
 def _gauge_lift_full_G(green_sublattice, nsite, cell, sub, theta, site_positions):
     """Compute G_phys[all_i, all_j] over the full (2*nsite, 2*nsite)
-    mVMC spin-block index using the shipping v3.6 gauge_lift. Used
-    only to screen composite candidates by magnitude; §4 / §4.3
+    mVMC spin-block index using the shipping gauge_lift. Used
+    only to screen composite candidates by magnitude; topology
     filters and the strong-mutation gate are applied by the caller.
+
+    See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     from tools._uhfk_to_mvmc.density_check import gauge_lift
 
@@ -131,7 +122,7 @@ def _is_structurally_degenerate_mutator(base_id, axis, L_folded, sub):
     is PROVABLY unable to perturb ANY composite candidate on axis
     ``axis`` for this fixture's lattice, regardless of ``theta``.
 
-    The v3.7 per-direction M-gauge-4 omits ``sub_offset[axis]`` from
+    The per-direction M-gauge-4 omits ``sub_offset[axis]`` from
     ``dr_folded``. Relative to baseline this shifts the folded-BZ phase
     argument by ``-so_diff[axis]``. M-ship-4 instead changes the per-site
     ``kf_dot_r`` position coefficient from 1 to 1/2; relative to
@@ -144,18 +135,20 @@ def _is_structurally_degenerate_mutator(base_id, axis, L_folded, sub):
     structure exists on that axis and every offset difference is zero,
     which is degenerate for a more basic reason.
 
-    In particular, the shipped v3.7 lattice has ``L_folded=2`` and
+    In particular, the shipped lattice has ``L_folded=2`` and
     ``SUB=2`` on every axis. For M-gauge-4, a reachable
     ``so_diff=+/-1`` changes the folded phase by
     ``exp(+/- i*pi) = -1``. For M-ship-4, ``sub_offset=1`` changes it
     by ``exp(+/- i*pi/2)`` relative to baseline or M-ship-5. Neither
-    v3.7 M-4 is therefore structurally degenerate or duplicated.
-    The v3.6 whole-vector ids retain their frozen sub_offset-sign-flip
-    semantics and never call this v3.7-only predicate.
+    M-4 is therefore not structurally degenerate or duplicated.
+    The whole-vector ids retain their sub_offset-sign-flip semantics and
+    never call this per-direction predicate.
 
     M-gauge-1/2/3/5 and M-ship-1/2/3/5 are unaffected. Mutations 1/2/3
     are theta-mediated and inactive axes are handled separately by the
-    spec §4b policy. Mutation 5 is not covered by this M-4 predicate.
+    inactive-axis policy. Mutation 5 is not covered by this M-4 predicate.
+
+    See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     if base_id not in ("M-gauge-4", "M-ship-4"):
         return False
@@ -166,7 +159,7 @@ def _is_structurally_degenerate_mutator(base_id, axis, L_folded, sub):
 
 def _mutation_threshold(mutator_id, *, axis_char, is_active, is_degenerate,
                         threshold_floor):
-    """Return the v3.7 threshold for one per-direction mutator.
+    """Return the threshold for one per-direction mutator.
 
     Inactive axes are policy-trivially-satisfied with threshold zero.
     An active-axis threshold must be strictly positive. Structural
@@ -247,9 +240,8 @@ def _write_manifest_after_self_check(manifest, output_path):
 
 
 # ---------------------------------------------------------------------
-# v3.6 path: byte-for-byte port of the original single-direction-APBC
-# selector + manifest builder. Used whenever a fixture has <= 1 active
-# APBC direction. Formulas are unchanged; only module-level constants
+# Whole-vector selector and manifest builder for a fixture with at most
+# one active APBC direction. Formulas are shared with the guard; constants
 # became explicit parameters and the mutator kernels are now imported
 # from soc_apbc_topology_guard.py instead of being duplicated locally.
 # ---------------------------------------------------------------------
@@ -257,15 +249,15 @@ def _write_manifest_after_self_check(manifest, output_path):
 
 def _pick_composite_v36(G_gauge, G_ship_base, G_ship_mut, green_sublattice,
                          nsite, cell, sub, theta, site_positions):
-    """§4.3 composite gate + strong-mutation gate (v3.6 formulas).
+    """Composite gate plus the whole-vector strong-mutation gate.
 
     Requires every M-gauge-1..5 delta AND every M-ship-1..5 delta to
-    exceed the §4.4 10% floor at the candidate composite. Otherwise
-    Phase 4's mutation matrix trips on the fixture-specific composite
+    exceed the 10% floor at the candidate composite. Otherwise
+    the mutation matrix trips on the fixture-specific composite
     even though the mutation IS being exercised -- it just happens to
     shift the composite by less than 10% |G_base|. This selector
     guarantees the committed composite is strong enough for every
-    mutation.
+    mutation. See ``docs/en/source/uhfk/tools/uhfk_to_mvmc.rst``.
     """
     best = None
     for i in range(nsite):
@@ -321,13 +313,13 @@ def _pick_composite_v36(G_gauge, G_ship_base, G_ship_mut, green_sublattice,
                         best = (i, s, j, t, G_c, mag)
     if best is None:
         raise RuntimeError(
-            "no composite element satisfies §4.3 + strong-mutation gate"
+            "no composite element satisfies the strong-mutation gate"
         )
     return best
 
 
 # ---------------------------------------------------------------------
-# v3.7 path: §4 addendum selector (per-direction dr requirement) +
+# Per-direction selector (per-direction dr requirement) plus the
 # strong-mutation gate restricted to active-axis per-direction mutators.
 # ---------------------------------------------------------------------
 
@@ -335,22 +327,23 @@ def _pick_composite_v36(G_gauge, G_ship_base, G_ship_mut, green_sublattice,
 def _pick_composite_v37(G_gauge, G_ship_base, G_ship_mut, green_sublattice,
                          nsite, cell, sub, theta, site_positions,
                          active_axes, gating_mutator_ids):
-    """v3.7 §4 addendum selector: for EACH active APBC direction d,
-    require ``abs(r_j[d] - r_i[d]) > 0`` (spec §4). Strong-mutation
+    """For EACH active APBC direction d, require
+    ``abs(r_j[d] - r_i[d]) > 0``. Strong-mutation
     gate restricted to ``gating_mutator_ids`` (all active-axis
     per-direction mutators). Inactive-axis mutations are
-    policy-trivially-satisfied (§4b). A structurally degenerate mutator
+    policy-trivially-satisfied. A structurally degenerate mutator
     on an active axis is rejected as an inadequate mutation set before
     composite selection.
 
-    v3.7 addendum extension (Phase 3c blocker fix): the composite must
-    also survive a whole-vector twist gauge drop (theta -> 0). This
+    The composite must also survive a whole-vector twist gauge drop
+    (theta -> 0). This
     rejects degenerate compositions where individual axis contributions
     cancel arithmetically (e.g. dr_x = -dr_y with theta_x = theta_y).
     Physically: gauge_lift's twist phase exp(-i theta . dr / L_full)
     must differ from 1 at this composite; otherwise a negative-control
     test that drops the twist gauge has zero statistical power there,
     even though the per-direction mutators above all fire individually.
+    See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     L_full = (sub * (cell // sub)).astype(np.float64)
     best = None
@@ -371,7 +364,7 @@ def _pick_composite_v37(G_gauge, G_ship_base, G_ship_mut, green_sublattice,
                     # are integer multiples of pi/N for cubic side N;
                     # on N=4 that is ~0.785 rad, ~7x margin over 0.1.
                     # Re-derive relative to pi/N before reusing on
-                    # much larger lattices (v3.8+ CellShape).
+                    # much larger lattices.
                     continue
                 for t in (0, 1):
                     if s == t:
@@ -413,7 +406,7 @@ def _pick_composite_v37(G_gauge, G_ship_base, G_ship_mut, green_sublattice,
                         best = (i, s, j, t, G_c, mag)
     if best is None:
         raise RuntimeError(
-            "no composite element satisfies §4 v3.7 addendum + "
+            "no composite element satisfies the per-direction + "
             "strong-mutation gate"
         )
     return best
@@ -465,7 +458,10 @@ def main():
 
     active_axes = tuple(d for d in range(3) if abs(THETA[d]) > 1e-12)
     is_v37 = len(active_axes) >= 2
-    schema_name = "v3.7-30entry" if is_v37 else "v3.6-10entry"
+    # Names the shape of T_M_per_mutation: one entry per whole-vector mutation
+    # for a single active axis, or one per (mutation, axis) pair for several.
+    # Provenance only; the guard infers the shape from the key count.
+    schema_name = "per-direction-30entry" if is_v37 else "whole-vector-10entry"
     print(
         f"Fixture geometry: CellShape={CELL.tolist()} "
         f"SubShape={SUB.tolist()} L_folded={L_FOLDED.tolist()} "
@@ -481,7 +477,7 @@ def main():
     eigen = np.load(f"{case}/output/eigen.npz")
     occ = np.load(f"{case}/output/occupation.npz")
 
-    print("Building G_gauge from green_sublattice (v3.6 gauge_lift APBC)...")
+    print("Building G_gauge from green_sublattice (gauge_lift APBC)...")
     G_gauge = _gauge_lift_full_G(
         green_sublattice, NSITE, CELL, SUB, THETA, SITE_POSITIONS,
     )
@@ -525,7 +521,7 @@ def main():
             )
     else:
         needed_ship_ids = tuple(f"M-ship-{n}" for n in range(1, 6))
-        gating_mutator_ids = None  # v3.6 path checks all 5 unconditionally.
+        gating_mutator_ids = None  # Whole-vector path checks all 5.
 
     print(
         f"Building {len(needed_ship_ids)} mutated shipping A matrices "
@@ -541,7 +537,7 @@ def main():
 
     if is_v37:
         print(
-            "Selecting composite element (§4 v3.7 addendum + "
+            "Selecting composite element (per-direction + "
             f"strong-mutation gate over {len(gating_mutator_ids)} "
             "active per-direction mutators)..."
         )
@@ -552,7 +548,7 @@ def main():
         )
     else:
         print(
-            "Selecting composite element (§4.3 + strong-mutation gate: "
+            "Selecting composite element (strong-mutation gate: "
             "every M-gauge/M-ship delta >= 10% |G_base|)..."
         )
         i_c, s_c, j_c, t_c, gv, mag = _pick_composite_v36(
@@ -570,11 +566,11 @@ def main():
     all_j = j_c + t_c * NSITE
     G_c_base = complex(G_gauge[all_i, all_j])
 
-    # T_M policy (spec §4.4): T_M = max(1e-5, 0.10 * |G_base|) on every
+    # T_M = max(1e-5, 0.10 * |G_base|) on every
     # mutation the fixture actually exercises. The strong-mutation
     # selector above guarantees every gated mutation's delta clears
     # T_M at manifest write time; the committed manifest records the
-    # actual per-mutation delta so a Phase 6 workspace regression can
+    # actual per-mutation delta so a workspace regression can
     # be diagnosed by comparing.
     T_floor = max(1e-5, 0.10 * float(abs(G_c_base)))
     T_M = {}
@@ -582,7 +578,7 @@ def main():
     notes = {}
 
     if is_v37:
-        print("Running the 30-entry v3.7 per-direction mutation matrix...")
+        print("Running the 30-entry per-direction mutation matrix...")
         for mid in guard._V37_MUTATION_IDS:
             base_id, axis = guard._split_mutator_id(mid)
             axis_char = _AXIS_CHARS[axis]
@@ -601,7 +597,7 @@ def main():
                 delta_M[mid] = 0.0
                 notes[mid] = (
                     f"trivially satisfied under theta_{axis_char} = 0 "
-                    "(spec v3.7 §4b): not gated, delta not computed."
+                    "not gated, delta not computed."
                 )
                 continue
             if mid.startswith("M-gauge-"):

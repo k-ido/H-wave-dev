@@ -1,4 +1,7 @@
-"""Tests for density_check (spec section 5.1)."""
+"""Tests for the UHFk-to-mVMC density checks.
+
+See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
+"""
 from __future__ import annotations
 
 import sys, os, tempfile
@@ -19,16 +22,15 @@ from tools._uhfk_to_mvmc.density_check import (
 
 _DATA_DIR = Path(__file__).parent / "data"
 
-# Tracked snapshots of H-wave outputs for case_soc_rashba_2d_sub, so v3.5
-# gauge tests do not depend on the gitignored
-# tests/validation/**/work/ tree (Codex Rev.1 finding).
+# Tracked snapshots of H-wave outputs for case_soc_rashba_2d_sub, so gauge
+# tests do not depend on the gitignored tests/validation/**/work/ tree.
 _V35_GREEN_PATH = str(_DATA_DIR / "v35_case_soc_rashba_2d_sub_green.npz")
 _V35_EIGEN_PATH = str(_DATA_DIR / "v35_case_soc_rashba_2d_sub_eigen.npz")
 _V35_OCC_PATH = str(_DATA_DIR / "v35_case_soc_rashba_2d_sub_occupation.npz")
 
-# v3.6 case_soc_rashba_2d_sub_apbc snapshots (Phase 3a). Same geometry as
-# v3.5 case_soc_rashba_2d_sub but with BoundaryCondition = AP-P-P (theta =
-# (pi, 0, 0)); Ncond = 8 to match the v3.5 physical filling.
+# case_soc_rashba_2d_sub_apbc snapshots. Same geometry as
+# case_soc_rashba_2d_sub but with BoundaryCondition = AP-P-P (theta =
+# (pi, 0, 0)); Ncond = 8 to match the physical filling.
 _V36_APBC_GREEN_PATH = str(
     _DATA_DIR / "v36_case_soc_rashba_2d_sub_apbc_green.npz"
 )
@@ -92,13 +94,12 @@ def test_density_check_soc_rejects_beyond_tol():
 
 
 def test_density_check_v3_still_rejects_s_neq_t_when_not_soc_mode():
-    """v3 behavior preserved under ``is_soc_mode=False``: if the reference
+    """Under ``is_soc_mode=False``, if the reference
     greenone.dat has a non-zero s != t entry while the bridge's G_all is
-    zero in that off-diagonal block (which is the natural v3 Sz-diagonal
+    zero in that off-diagonal block (which is the natural Sz-diagonal
     output), the comparison must still flag the mismatch.
 
-    This exercises the implicit scope-violation guard that used to be
-    described in the v3 docstring: v3 bridge builds a spin-block-diagonal
+    The bridge builds a spin-block-diagonal
     G_all, so any non-zero s != t entry in the reference will differ from
     the bridge's zero and trigger DensityMismatchError.
     """
@@ -109,7 +110,7 @@ def test_density_check_v3_still_rejects_s_neq_t_when_not_soc_mode():
     G_all[2, 2] = 0.5
     G_all[3, 3] = 0.5  # spin-block-diagonal only, off-diagonal blocks all 0
 
-    # Reference has a non-zero s != t entry, incompatible with v3 scope.
+    # Reference has a non-zero s != t entry, incompatible with this scope.
     with tempfile.NamedTemporaryFile(
         "w", suffix=".dat", delete=False
     ) as tmp:
@@ -130,7 +131,7 @@ def test_density_check_v3_still_rejects_s_neq_t_when_not_soc_mode():
 
 
 def test_gauge_lift_fft_round_trip():
-    """Codex v3.5 spec §9 Phase A step 1: fftn(ifftn(...)) must recover
+    """fftn(ifftn(...)) must recover
     the original green_sublattice at 1e-14 element-wise, matching H-wave's
     forward-normalized FFT convention (_save_green at uhfk.py:2500-2510).
     """
@@ -162,9 +163,10 @@ def test_gauge_lift_fft_round_trip():
 
 
 def test_gauge_lift_sub_offset_sign_audit():
-    """Codex v3.5 spec §9 Phase A step 2: swapping the sign of sub_offset
+    """Swapping the sign of sub_offset
     in gauge_lift's phase must make the reconstructed G disagree with the
-    correct shipping A density by a Rashba-scale amount.
+    correct shipping A density by a Rashba-scale amount. See
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     import numpy as np
     from tools._uhfk_to_mvmc.density_check import gauge_lift
@@ -250,7 +252,7 @@ def test_gauge_lift_sub_offset_sign_audit():
 
 
 def test_gauge_lift_absolute_scale_and_full_2Ns_2Ns_coverage():
-    """Codex v3.5 spec §9 Phase A step 3: build the full 2Ns × 2Ns
+    """Build the full 2Ns × 2Ns
     G_ref matrix from gauge_lift and compare to G_direct =
     np.conj(A_ship) @ A_ship.T over every element, including s != t
     cross-spin blocks. Asserts 5e-13 element-wise agreement (FP roundoff
@@ -258,7 +260,7 @@ def test_gauge_lift_absolute_scale_and_full_2Ns_2Ns_coverage():
     tighter than the 1e-10 ship gate in
     compare_against_green_sublattice), 1% absolute scale, and > 0.01
     cross-spin magnitude (proves the test actually exercises Rashba SOC
-    off-diagonals).
+    off-diagonals). See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     import numpy as np
     from tools._uhfk_to_mvmc.density_check import gauge_lift
@@ -331,7 +333,6 @@ def test_gauge_lift_absolute_scale_and_full_2Ns_2Ns_coverage():
                         boundary_theta=(0.0, 0.0, 0.0),
                     )
 
-    # Codex v3.5 spec §9 Phase A step 3 assertions:
     max_diff = np.max(np.abs(G_ref - G_direct))
     assert max_diff < 5e-13, (
         f"|G_ref - G_direct|_max = {max_diff:.3e} > 5e-13; the gauge_lift "
@@ -357,10 +358,10 @@ def test_gauge_lift_absolute_scale_and_full_2Ns_2Ns_coverage():
 
 
 def test_gauge_lift_catches_orientation_swap_mutation():
-    """Codex v3.5 spec §9 Phase A step 4: build G with the WRONG
+    """Build G with the WRONG
     orientation A_ship @ A_ship.conj().T (transposed/conjugated) and
-    verify gauge_lift disagrees by > 1e-3 element-wise. This proves the
-    gate catches the exact Codex v3.5 spec Rev.4 finding.
+    verify gauge_lift disagrees by > 1e-3 element-wise. See
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst`` for the density orientation.
     """
     import numpy as np
     from tools._uhfk_to_mvmc.density_check import gauge_lift
@@ -441,7 +442,7 @@ def test_gauge_lift_catches_orientation_swap_mutation():
 
 
 def test_compare_against_green_sublattice_soc_mode_passes_on_correct_A_ship():
-    """Codex v3.5 spec §3: compare_against_green_sublattice with
+    """compare_against_green_sublattice with
     is_soc_sublattice_mode=True must PASS at 1e-10 tolerance when the
     input G is the correct shipping-A density.
     """
@@ -508,7 +509,7 @@ def test_compare_against_green_sublattice_soc_mode_passes_on_correct_A_ship():
 
 
 def test_compare_against_green_sublattice_soc_mode_fires_on_orientation_swap():
-    """Codex v3.5 spec §3 + §6.2b: compare_against_green_sublattice with
+    """compare_against_green_sublattice with
     is_soc_sublattice_mode=True must RAISE DensityMismatchError when
     the input G is transposed/conjugated (orientation swap mutation).
     """
@@ -574,15 +575,14 @@ def test_compare_against_green_sublattice_soc_mode_fires_on_orientation_swap():
 
 
 # ---------------------------------------------------------------------
-# Phase 3b + 3c: v3.6 APBC pins on case_soc_rashba_2d_sub_apbc snapshot.
+# APBC pins on the case_soc_rashba_2d_sub_apbc snapshot.
 # ---------------------------------------------------------------------
 
 
 def _v36_apbc_build_shipping_A():
-    """Load the v3.6 APBC snapshots and build the shipping A matrix under
+    """Load the APBC snapshots and build the shipping A matrix under
     ``boundary_theta = (pi, 0, 0)`` (AP-P-P). Returns (A_ship, geometry
-    inputs) usable by both the positive pin (Phase 3b) and the negative
-    control (Phase 3c).
+    inputs) usable by both the positive pin and the negative control.
     """
     import numpy as np
     from tools._uhfk_to_mvmc.general_fij_builder import (
@@ -635,17 +635,15 @@ def _v36_apbc_build_shipping_A():
 
 
 def test_gauge_lift_apbc_matches_shipping_A_on_real_run():
-    """Phase 3b (A2 positive pin, spec §2.4 + §3.2). On the v3.6
-    case_soc_rashba_2d_sub_apbc snapshot with BoundaryCondition = AP-P-P
+    """On the case_soc_rashba_2d_sub_apbc snapshot with BoundaryCondition = AP-P-P
     (theta = (pi, 0, 0)), the shipping A density ``conj(A) @ A.T`` must
     equal ``gauge_lift(green_sublattice, ..., boundary_theta=(pi, 0, 0))``
     over every (all_i, all_j) at max_abs_delta < 1e-10.
 
     Under APBC this proves the two-step gauge composition
     ``exp(-i k_folded . dr_folded) * exp(-i theta . dr_full / L_full)``
-    matches the shipping A's own APBC composition; the v3.5 pin above
-    only exercises PBC (theta = 0). Together they cover the v3.6 spec §2
-    invariant on the fixture the bridge actually ships against.
+    matches the shipping A's own APBC composition. See
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     import numpy as np
     from tools._uhfk_to_mvmc.density_check import gauge_lift
@@ -694,8 +692,8 @@ def test_gauge_lift_apbc_matches_shipping_A_on_real_run():
 
 
 def test_gauge_lift_apbc_negative_control_theta_zero():
-    """Phase 3c (spec §2.5 negative control). At the fixture's composite
-    element (i_c, s_c, j_c, t_c) selected in Phase 2d, compute:
+    """At the fixture's selected composite element (i_c, s_c, j_c, t_c),
+    compute:
 
     - ``G_A_c``  = shipping A density at the composite under theta = (pi, 0, 0)
     - ``G_neg_c`` = ``gauge_lift(green_sublattice, ..., boundary_theta = (0, 0, 0))``
@@ -705,7 +703,7 @@ def test_gauge_lift_apbc_negative_control_theta_zero():
     gauge in ``gauge_lift`` is what makes the APBC composition work; if
     the twist term were vestigial or already carried elsewhere, dropping
     it would leave ``G_neg_c`` numerically close to ``G_A_c`` at machine
-    precision.
+    precision. See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     import json
     import numpy as np
@@ -754,14 +752,15 @@ def test_gauge_lift_apbc_negative_control_theta_zero():
 
 
 # ---------------------------------------------------------------------
-# Phase 4a: Adversarial mutation matrix (spec §4.4, §9 Phase 4).
+# Adversarial mutation matrix. The validation contract is documented in
+# ``docs/en/source/uhfk/tools/uhfk_to_mvmc.rst``.
 # ---------------------------------------------------------------------
 
 
 def _axis_of_mutator(mutator_id):
-    """Return the axis index for a v3.7 per-direction mutator id
+    """Return the axis index for a per-direction mutator id
     (M-gauge-1-x -> 0, M-gauge-1-y -> 1, M-gauge-1-z -> 2) or None for
-    v3.6 whole-vector mutators / baseline.
+    whole-vector mutators / baseline.
 
     Raises ValueError if the id looks like a per-direction mutator but
     the axis suffix is invalid (e.g., M-gauge-1-w).
@@ -769,8 +768,8 @@ def _axis_of_mutator(mutator_id):
     if not mutator_id.startswith(("M-gauge-", "M-ship-")):
         return None  # baseline or unknown
     parts = mutator_id.split("-")
-    # v3.6 whole-vector: "M-gauge-1" -> 3 parts
-    # v3.7 per-direction: "M-gauge-1-x" -> 4 parts
+    # Whole-vector: "M-gauge-1" -> 3 parts
+    # Per-direction: "M-gauge-1-x" -> 4 parts
     if len(parts) == 3:
         return None
     if len(parts) != 4:
@@ -811,21 +810,22 @@ def _v36_gauge_lift_at_composite_mutated(
     twist / dr_folded phase. Preserves every other step so any pass /
     fail is attributable to the specific mutation.
 
-    Supported mutators (spec §4.4):
+    Supported mutators:
       * ``baseline``   -- exact reproduction of the shipping gauge_lift
       * ``M-gauge-1``  -- twist sign: exp(-i theta.dr/L) -> exp(+i theta.dr/L)
       * ``M-gauge-2``  -- twist unit: pass theta / (2*pi) as theta
       * ``M-gauge-3``  -- twist L: divide by L_folded instead of L_full
-      * ``M-gauge-4``  -- v3.6: sub_offset sign in dr_folded;
-                          v3.7 per-direction: omit sub_offset on that axis
+      * ``M-gauge-4``  -- whole-vector: sub_offset sign in dr_folded;
+                          per-direction: omit sub_offset on that axis
       * ``M-gauge-5``  -- dr_folded in twist phase instead of dr_full
 
-    v3.7 also accepts per-direction ids (``M-gauge-{1..5}-{x,y,z}``,
-    spec §4b): the mutation is applied to only the named axis component
+    Per-direction ids (``M-gauge-{1..5}-{x,y,z}``) apply the mutation
+    to only the named axis component
     of theta / L / dr, while the other two axes keep the baseline
-    behavior. M-gauge-4 omits sub_offset on that axis because the v3.6
+    behavior. M-gauge-4 omits sub_offset on that axis because the
     sign flip is degenerate for ``L_folded=2``. See
-    ``_axis_of_mutator``.
+    ``_axis_of_mutator``. See
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     gs_soc = green_sublattice[:, 0, :, 0, :]
     L_folded = cell_shape // subshape
@@ -850,8 +850,8 @@ def _v36_gauge_lift_at_composite_mutated(
     aa = 2 * folded_orb_i + int(s)
     bb = 2 * folded_orb_j + int(t)
 
-    # v3.7 per-direction mutators (M-gauge-N-{x,y,z}) restrict the base
-    # mutation N to a single axis; v3.6 whole-vector ids (axis is None)
+    # Per-direction mutators (M-gauge-N-{x,y,z}) restrict the base
+    # mutation N to a single axis; whole-vector ids (axis is None)
     # keep their original code paths below untouched.
     axis = _axis_of_mutator(mutator)
     base_mutator = (
@@ -866,7 +866,7 @@ def _v36_gauge_lift_at_composite_mutated(
                 - (fc_i.astype(np.float64) + (-so_i).astype(np.float64))
             )
         else:
-            # v3.7 schema: omit sub_offset on the named axis only;
+            # Omit sub_offset on the named axis only;
             # other axes keep the baseline (+so_i, +so_j) contribution.
             dr_folded = (
                 (fc_j.astype(np.float64) + so_j.astype(np.float64))
@@ -943,21 +943,22 @@ def _v36_build_shipping_A_mutated(mutator):
     mutation applied to the shipping A. Returns (A, geom); the caller
     computes G_direct = conj(A) @ A.T at the composite element.
 
-    Supported mutators (spec §4.4):
+    Supported mutators:
       * ``baseline``  -- reference shipping A (unmutated)
       * ``M-ship-1``  -- phys_dn sign: exp(-i theta.r/L) -> exp(+i theta.r/L)
       * ``M-ship-2``  -- phys_dn unit: pass theta/(2*pi) as theta
       * ``M-ship-3``  -- phys_dn L: divide by L_folded instead of L_phys
-      * ``M-ship-4``  -- v3.6: kf_dot_r offset sign;
-                         v3.7 per-direction: halve offset on that axis
+      * ``M-ship-4``  -- whole-vector: kf_dot_r offset sign;
+                         per-direction: halve offset on that axis
       * ``M-ship-5``  -- kf_dot_r drops sub_offset entirely
 
-    v3.7 also accepts per-direction ids (``M-ship-{1..5}-{x,y,z}``,
-    spec §4b): the mutation is applied to only the named axis component
+    Per-direction ids (``M-ship-{1..5}-{x,y,z}``) apply the mutation
+    to only the named axis component
     of theta / L / sub_offset, while the other two axes keep baseline
-    behavior. M-ship-4 halves sub_offset on that axis because the v3.6
+    behavior. M-ship-4 halves sub_offset on that axis because the
     sign flip is degenerate for ``L_folded=2``; M-ship-5 omits it. See
-    ``_axis_of_mutator``.
+    ``_axis_of_mutator``. See
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     from tools._uhfk_to_mvmc.general_fij_builder import (
         build_pair_list, compute_canonical_reps,
@@ -1015,8 +1016,8 @@ def _v36_build_shipping_A_mutated(mutator):
             so[0] + subshape[0] * (so[1] + subshape[1] * so[2])
         )
 
-    # v3.7 per-direction mutators (M-ship-N-{x,y,z}) restrict the base
-    # mutation N to a single axis; v3.6 whole-vector ids (axis is None)
+    # Per-direction mutators (M-ship-N-{x,y,z}) restrict the base
+    # mutation N to a single axis; whole-vector ids (axis is None)
     # keep their original code paths below untouched.
     axis = _axis_of_mutator(mutator)
     base_mutator = (
@@ -1090,7 +1091,7 @@ def _v36_build_shipping_A_mutated(mutator):
                 (folded_cell - sub_offset_per_site).astype(np.float64),
             )
         else:
-            # v3.7 schema: halve sub_offset on the named axis only;
+            # Halve sub_offset on the named axis only;
             # other axes keep the baseline contribution.
             pos_arg = (folded_cell + sub_offset_per_site).astype(np.float64)
             pos_arg[:, axis] = (
@@ -1149,17 +1150,18 @@ _M_SHIP_IDS = tuple(f"M-ship-{k}" for k in range(1, 6))
 
 @pytest.mark.parametrize("mutator", _M_GAUGE_IDS + _M_SHIP_IDS)
 def test_gauge_lift_apbc_mutation_regression_matrix(mutator):
-    """Phase 4a (spec §4.4 + §9 Phase 4). For each of the 10 named
+    """For each of the 10 named
     mutations, apply to the shipping ``gauge_lift`` (M-gauge) or
     ``build_slater_orbitals`` (M-ship), evaluated at the fixture's
-    composite element ``(i_c, s_c, j_c, t_c)`` from the Phase 2 manifest,
+    composite element ``(i_c, s_c, j_c, t_c)`` from the manifest,
     and assert ``|G_mut - G_base| >= max(1e-5, 0.10 * |G_base|)``.
 
-    Runs against the Phase 3 snapshot (tests/data/v36_case_soc_rashba_2d
+    Runs against the tracked snapshot (tests/data/v36_case_soc_rashba_2d
     _sub_apbc_*.npz) so the pin remains reproducible without a live SCF
-    workspace. This is a UNIT test on stable inputs; the Phase 6 G4
+    workspace. This is a unit test on stable inputs; the G4
     workspace gate runs the same mutations against a fresh SCF via
-    soc_apbc_topology_guard.py.
+    soc_apbc_topology_guard.py. See
+    ``docs/en/source/uhfk/tools/uhfk_to_mvmc.rst``.
     """
     import json
 
@@ -1211,18 +1213,17 @@ def test_gauge_lift_apbc_mutation_regression_matrix(mutator):
     assert delta_M >= T_M, (
         f"{mutator}: delta_M = {delta_M:.3e} < T_M = {T_M:.3e} "
         f"(|G_base| = {G_base_abs:.3e}); the mutation did NOT perturb "
-        "the composite element above the §4.4 sensitivity floor. The "
+        "the composite element above the sensitivity floor. The "
         "shipping code path this mutation targets is therefore not being "
         "exercised at the composite; either regenerate the composite via "
-        "Phase 2 producer with a stronger candidate, or investigate why "
+        "producer with a stronger candidate, or investigate why "
         "the mutation is orthogonal to the composite's dr_folded / "
         "sub_offset / twist coordinates."
     )
 
 
 # ---------------------------------------------------------------------
-# Phase 3b (v3.7): A2 positive pin parametrized over the 4 v3.7
-# multi-direction APBC fixtures (spec §3, §11.1).
+# A2 positive pin over the four multi-direction APBC fixtures.
 # ---------------------------------------------------------------------
 
 
@@ -1235,17 +1236,17 @@ def test_gauge_lift_apbc_mutation_regression_matrix(mutator):
 def test_gauge_lift_apbc_matches_shipping_A_on_real_run_v37(
     fixture_name, expected_theta, expected_ncond,
 ):
-    """Phase 3b (v3.7 spec §3 + §11.1) parametrized over the 4 v3.7
-    shipping fixtures under CellShape=[4,4,4]/SubShape=[2,2,2]. For
+    """Parametrized over the four shipping fixtures under
+    CellShape=[4,4,4]/SubShape=[2,2,2]. For
     each fixture, verify the shipping A density matches the gauge-
     lifted green_sublattice at max_abs_delta < 1e-10 under the
     fixture's own boundary_theta -- the G1 in-process self-consistency
-    gate (v3.6 spec §2.5 Assumption A2 pin; formula unchanged per v3.7
-    spec §3) extended to multi-direction APBC.
+    gate extended to multi-direction APBC.
 
-    The v3.6 test above pins the single-direction (AP-P-P) APBC case
-    at 1e-10. This v3.7 test extends the pin to multi-direction APBC:
+    The test above pins the single-direction (AP-P-P) APBC case at
+    1e-10. This test covers multi-direction APBC:
     xy (AP-AP-P), xz (AP-P-AP), yz (P-AP-AP), xyz (AP-AP-AP).
+    See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     from tools._uhfk_to_mvmc.density_check import gauge_lift
     from tools._uhfk_to_mvmc.general_fij_builder import (
@@ -1326,20 +1327,19 @@ def test_gauge_lift_apbc_matches_shipping_A_on_real_run_v37(
     assert max_diff < 1e-10, (
         f"[{fixture_name}] |G_ship - G_lift|_max = {max_diff:.3e} > 1e-10 "
         "under multi-direction APBC; gauge_lift + build_slater_orbitals "
-        "do not agree on this v3.7 fixture."
+        "do not agree on this fixture."
     )
 
     # Cross-spin sanity: fixture MUST exercise Rashba SOC off-diagonals.
     assert cross_max > 0.01, (
         f"[{fixture_name}] |G_lift[s!=t]|_max = {cross_max:.3e} <= 0.01; "
-        "the v3.7 fixture does not exercise Rashba SOC off-diagonals as "
+        "the fixture does not exercise Rashba SOC off-diagonals as "
         "expected."
     )
 
 
 # ---------------------------------------------------------------------
-# Phase 3c (v3.7): negative control parametrized over the 4 v3.7
-# multi-direction APBC fixtures (spec §4 + §11.1).
+# Negative control over the four multi-direction APBC fixtures.
 # ---------------------------------------------------------------------
 
 
@@ -1352,8 +1352,8 @@ def test_gauge_lift_apbc_matches_shipping_A_on_real_run_v37(
 def test_gauge_lift_apbc_negative_control_theta_zero_v37(
     fixture_name, expected_theta, expected_ncond,
 ):
-    """Phase 3c (v3.7 §4 + §11.1): parametrized negative control over
-    the 4 v3.7 shipping fixtures. At each fixture's composite element
+    """Parametrized negative control over the four shipping fixtures.
+    At each fixture's composite element
     (i_c, s_c, j_c, t_c) from composite_element.json:
 
     - G_A_c    = shipping A density under theta = expected_theta
@@ -1362,7 +1362,8 @@ def test_gauge_lift_apbc_negative_control_theta_zero_v37(
     Assert |G_neg_c - G_A_c| >= 0.3 * |G_A_c|. Proves the multi-
     direction twist gauge is functionally load-bearing on this fixture;
     if the gauge were vestigial or already carried elsewhere, dropping
-    it would leave G_neg_c ~ G_A_c at machine precision.
+    it would leave G_neg_c ~ G_A_c at machine precision. See
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     import json
     from tools._uhfk_to_mvmc.density_check import gauge_lift
@@ -1455,16 +1456,14 @@ def test_gauge_lift_apbc_negative_control_theta_zero_v37(
 
 
 # ---------------------------------------------------------------------
-# Phase 4a (v3.7): per-direction mutation matrix parametrized over the
-# 4 v3.7 multi-direction APBC fixtures (spec §4b, §11.2). Parallel to
-# ``test_gauge_lift_apbc_mutation_regression_matrix`` above (v3.6,
-# left unchanged). Reuses the same mutation semantics but reads the
-# composite element AND the per-mutation floor T_M from each v3.7
-# fixture's own composite_element.json (Phase 2 producer output)
+# Per-direction mutation matrix over the four multi-direction APBC fixtures.
+# It parallels ``test_gauge_lift_apbc_mutation_regression_matrix`` above,
+# reuses the same mutation semantics, and reads the composite element and
+# per-mutation floor T_M from each fixture's own composite_element.json
 # instead of recomputing T_M = max(1e-5, 0.10 * |G_c|) locally: the
 # producer's floor preserves the one documented relaxation on top of
 # that base formula: an inactive axis (theta_axis == 0) has T_M = 0 and
-# is handled here via pytest.skip per spec §4b. Every active-axis entry
+# is handled here via pytest.skip. Every active-axis entry
 # has a positive threshold; the producer rejects a structurally
 # degenerate active-axis mutation set instead of emitting a vacuous gate.
 # ---------------------------------------------------------------------
@@ -1481,16 +1480,16 @@ def _v37_build_shipping_A_mutated(
     mutator, *, eigen, occ, cell_shape, subshape, site_positions, theta,
     ncond,
 ):
-    """Parametrized sibling of ``_v36_build_shipping_A_mutated`` (spec
-    v3.7 §4b) for the 4 multi-direction APBC fixtures. Same mutation
+    """Parametrized sibling of ``_v36_build_shipping_A_mutated`` for the
+    four multi-direction APBC fixtures. Same mutation
     semantics and the same shadow-copy-of-``build_slater_orbitals``
     approach; ``cell_shape`` / ``subshape`` / ``site_positions`` /
     ``theta`` / ``ncond`` and the eigen / occupation snapshot arrays
     (already-loaded ``np.load`` objects) are parameters instead of the
-    v3.6 fixture's hardcoded constants, so this helper is reusable
+    single-direction fixture's hardcoded constants, so this helper is reusable
     across xy/xz/yz/xyz without touching ``_v36_build_shipping_A_
     mutated``. See that function's docstring for the mutator list;
-    ``mutator`` accepts both v3.6 whole-vector ids and v3.7
+    ``mutator`` accepts both whole-vector ids and
     per-direction ids per ``_axis_of_mutator``.
     """
     from tools._uhfk_to_mvmc.general_fij_builder import (
@@ -1537,8 +1536,8 @@ def _v37_build_shipping_A_mutated(
             so[0] + subshape[0] * (so[1] + subshape[1] * so[2])
         )
 
-    # v3.7 per-direction mutators (M-ship-N-{x,y,z}) restrict the base
-    # mutation N to a single axis; v3.6 whole-vector ids (axis is
+    # Per-direction mutators (M-ship-N-{x,y,z}) restrict the base
+    # mutation N to a single axis; whole-vector ids (axis is
     # None) keep their original code paths below untouched.
     axis = _axis_of_mutator(mutator)
     base_mutator = (
@@ -1673,17 +1672,16 @@ def _v37_build_shipping_A_mutated(
 def test_gauge_lift_apbc_mutation_regression_matrix_v37(
     fixture_name, expected_theta, expected_ncond, mutation_key,
 ):
-    """Phase 4a (v3.7 spec §4b + §11.2, extends v3.6 §4.4). Parallel to
-    ``test_gauge_lift_apbc_mutation_regression_matrix`` above (v3.6,
-    unchanged): same 30-id per-direction mutation matrix
-    (M-{gauge,ship}-{1..5}-{x,y,z}), now parametrized over the 4 v3.7
+    """Parallel to ``test_gauge_lift_apbc_mutation_regression_matrix``:
+    the same 30-id per-direction mutation matrix
+    (M-{gauge,ship}-{1..5}-{x,y,z}) is parametrized over the four
     multi-direction APBC fixtures (xy/xz/yz/xyz on
     CellShape=[4,4,4]/SubShape=[2,2,2]) for 4 x 30 = 120 cases.
 
     A mutation whose axis carries no APBC twist on this fixture
-    (theta_axis == 0) is a no-op by construction (spec §4b), so the
+    (theta_axis == 0) is a no-op by construction, so the
     case is skipped rather than asserted. Otherwise the case loads the
-    fixture's Phase 2 composite_element.json manifest, applies the
+    fixture's composite_element.json manifest, applies the
     mutation to the shipping gauge_lift (M-gauge) or
     build_slater_orbitals (M-ship) at the manifest's composite element
     (i_c, s_c, j_c, t_c), and asserts the resulting delta clears the
@@ -1691,9 +1689,10 @@ def test_gauge_lift_apbc_mutation_regression_matrix_v37(
     the module-level banner above for why T_M is read from the
     manifest rather than recomputed).
 
-    Runs against the Phase 3 snapshot (tests/data/v37_case_soc_rashba
+    Runs against the tracked snapshot (tests/data/v37_case_soc_rashba
     _3d_sub_apbc_{fixture}_*.npz) so the pin remains reproducible
-    without a live SCF workspace, matching the v3.6 test's design.
+    without a live SCF workspace. See
+    ``docs/en/source/uhfk/tools/uhfk_to_mvmc.rst``.
     """
     import json
 
@@ -1705,7 +1704,7 @@ def test_gauge_lift_apbc_mutation_regression_matrix_v37(
         pytest.skip(
             f"{mutation_key}: theta_{axis_char} = 0 on fixture "
             f"{fixture_name!r}; this axis carries no APBC twist, so "
-            "the mutation is a no-op by construction (spec v3.7 §4b)."
+            "the mutation is a no-op by construction."
         )
 
     prefix = f"v37_case_soc_rashba_3d_sub_apbc_{fixture_name}"
@@ -1772,7 +1771,7 @@ def test_gauge_lift_apbc_mutation_regression_matrix_v37(
         "did NOT perturb the composite element above the manifest's "
         "producer-time sensitivity floor. The shipping code path this "
         "mutation targets is therefore not being exercised at the "
-        "composite; either regenerate the composite via the Phase 2 "
+        "composite; either regenerate the composite via the "
         "producer, or investigate why the mutation is orthogonal to "
         "the composite's dr_folded / sub_offset / twist coordinates."
     )

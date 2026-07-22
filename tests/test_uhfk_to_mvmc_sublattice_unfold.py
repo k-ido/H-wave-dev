@@ -1,6 +1,6 @@
-"""Sublattice unfold helpers (spec §3.1, §4.1). 3D generic coverage.
+"""Sublattice unfold helpers with 3D generic coverage.
 
-Codex-flagged adversarial cases:
+Adversarial cases:
 - Down-row block offset (folded_row_indices)
 - Site decoding driven by coordinates, not by row-major ordinal
 - SubShape[d] must divide CellShape[d]
@@ -50,9 +50,8 @@ def test_decode_encode_round_trip_3d():
 def test_folded_row_indices_down_has_offset():
     """Down row must include norb_folded offset, not just folded_orb.
 
-    Codex finding 1: v1 hid this bug because norb_folded == 1 made the
-    down row equal 1 regardless of the offset. With norb_folded=2 the
-    two decompositions diverge.
+    With norb_folded=2, including or omitting the block offset gives
+    distinguishable rows. See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     # norb_folded=2 (single orbital × subvol=2)
     row_up, row_down = folded_row_indices(folded_orb=0, norb_folded=2)
@@ -68,7 +67,7 @@ def test_decode_non_row_major_coordinates():
     """Site 5 in a lexicographic ordering has coord (2, 1, 0) for
     Lx=3, Ly=2; but geometry_uhf.dat may list sites in a different
     order. decode_physical_site must use the coordinate directly, not
-    infer it from the row-major ordinal (Codex finding 3).
+    infer it from the row-major ordinal.
     """
     subshape = np.array([1, 2, 1], dtype=np.int64)
     coord_a = np.array([2, 1, 0], dtype=np.int64)
@@ -86,7 +85,7 @@ def test_decode_non_row_major_coordinates():
 
 
 # ---------------------------------------------------------------------
-# unfold_amplitude_columns (added in Step 7 of the plan)
+# unfold_amplitude_columns
 # ---------------------------------------------------------------------
 
 from tools._uhfk_to_mvmc.sublattice_unfold import unfold_amplitude_columns
@@ -97,8 +96,11 @@ def _klist(n):
 
 
 def test_unfold_amplitude_columns_1d_pbc_l4():
-    """L=4 SubShape=[1,1,1] PBC reduces to the v2.1 positive-Bloch
-    plane wave: ``plane_wave_up[k, i] = exp(+i k r_i) / sqrt(L)``."""
+    """L=4 SubShape=[1,1,1] PBC gives the positive-Bloch plane wave.
+
+    ``plane_wave_up[k, i] = exp(+i k r_i) / sqrt(L)``. See
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
+    """
     L = 4
     wv = np.array([[v, 0, 0] for v in _klist(L)], dtype=np.int64)
     site_positions = np.array([[i, 0, 0] for i in range(L)], dtype=np.int64)
@@ -117,7 +119,7 @@ def test_unfold_amplitude_columns_1d_pbc_l4():
 
     # k=0, i=1: exp(+i*0*1)/sqrt(4) = 0.5
     assert pw_up[list(wv[:, 0]).index(0), 1] == pytest.approx(0.5 + 0.0j)
-    # k=1 (k_folded = 2pi/4), i=1: exp(+i*pi/2)/2 = +0.5i (v2.1 positive Bloch)
+    # k=1 (k_folded = 2pi/4), i=1: exp(+i*pi/2)/2 = +0.5i.
     n_k1 = list(wv[:, 0]).index(1)
     assert pw_up[n_k1, 1] == pytest.approx(0.0 + 0.5j, abs=1e-12)
 
@@ -155,13 +157,14 @@ def test_unfold_amplitude_columns_1d_subshape_2():
 
 
 def test_unfold_plane_wave_down_equals_up_v2_1():
-    """v2.1 spec §3.3: ``plane_wave_down`` shares the SAME positive-Bloch
+    """``plane_wave_down`` shares the SAME positive-Bloch
     envelope as ``plane_wave_up``. The (k, -k) time-reversal partnership
     is resolved via the caller's ``eigenvector[partner_n, ...]`` lookup,
-    not via a conjugated plane wave. Locks Codex re-review finding:
-    prevents a future regression that "fixes" the docstring by
+    not via a conjugated plane wave. This prevents a regression that
+    reintroduces
     reintroducing ``conj(plane_wave_up_folded) * exp(-i theta r / L)``
-    and silently breaks SubShape > 1 APBC density.
+    and silently breaks SubShape > 1 APBC density. See
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     # 1D APBC SubShape=[2,1,1] — the exact fixture whose density check
     # historically failed under the negative-Bloch down envelope.
@@ -177,5 +180,5 @@ def test_unfold_plane_wave_down_equals_up_v2_1():
         wv, cell_shape, subshape, site_positions, norb_orig=1, theta=theta,
     )
 
-    # v2.1 invariant: down envelope IS the up envelope (element-wise).
+    # The down envelope is the up envelope element-wise.
     np.testing.assert_array_almost_equal(pw_dn, pw_up, decimal=14)

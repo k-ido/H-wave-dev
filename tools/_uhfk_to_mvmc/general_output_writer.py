@@ -1,6 +1,7 @@
-"""v3 InOrbitalGeneral aggregator + writer with class-consistency check.
+"""InOrbitalGeneral aggregator and writer with class-consistency checks.
 
-Spec: docs/superpowers/specs/2026-07-01-uhfk-mvmc-pairproduct-general-v3-design.md §4.3
+See docs/en/source/algorithm/uhfk_to_mvmc.rst for F construction and
+docs/en/source/uhfk/tools/uhfk_to_mvmc.rst for the consistency check.
 """
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ class ClassInconsistencyError(RuntimeError):
     """Raised when F entries mapped to the same orbitalidx class differ
     beyond class_consistency_tol; indicates a mismatch between the
     input Slater's invariances and the orbitalidx_general.def class
-    structure (Codex Rev.8 finding fix, spec §5.2)."""
+    structure."""
 
 
 def aggregate_general_orbital_params(
@@ -25,7 +26,7 @@ def aggregate_general_orbital_params(
     class_consistency_tol: float = 1.0e-8,
 ) -> np.ndarray:
     """Aggregate F[all_i, all_j] * sign into per-class averages, then add
-    small uniform rank-lift noise (v2.1 mechanism).
+    small uniform rank-lift noise.
 
     A fail-fast consistency check runs BEFORE averaging: for every idx,
     the maximum residual |value_i - value_j| across all signed F entries
@@ -41,7 +42,7 @@ def aggregate_general_orbital_params(
     n_orbital_idx : int
         Total parameter count (from orbitalidx_general.def header).
     epsilon_noise : float, optional
-        Rank-lift noise amplitude (default 1e-8, v2.1 default).
+        Rank-lift noise amplitude (default 1e-8).
     complex_type : int, optional
         1 → noise both real and imag parts; 0 → real only.
     rng : numpy.random.Generator, optional
@@ -73,7 +74,8 @@ def aggregate_general_orbital_params(
                 f"class_consistency_tol {class_consistency_tol:.3e}. "
                 f"Values (first 5): {arr[:5].tolist()!r}. "
                 "This indicates orbitalidx_general.def encodes a symmetry "
-                "the Slater state does not respect (spec §4.3, Codex Rev.8)."
+                "the Slater state does not respect; regenerate it with "
+                "classes matching the state."
             )
 
     params = np.zeros(n_orbital_idx, dtype=np.complex128)
@@ -95,7 +97,7 @@ def aggregate_general_orbital_params(
 
 def write_zqp_orbital_general(out_path: str, params: np.ndarray) -> None:
     """Write mVMC-compatible zqp_orbital_uhfk.dat (same 5-line header +
-    ``<idx> <real> <imag>`` body as v2.1 ``output_writer.write_zqp_orbital``).
+    ``<idx> <real> <imag>`` body as ``output_writer.write_zqp_orbital``).
     mVMC's namelist.def entry becomes ``InOrbitalGeneral <path>``.
     """
     params = np.asarray(params, dtype=np.complex128)

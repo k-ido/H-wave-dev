@@ -1,7 +1,7 @@
 """Verify density matrix is invariant under PairProduct gauges
 (F scaling, column permutation, complex APBC orientation).
 
-Spec section 5.1 (Codex Spec Review finding 2).
+See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
 """
 from __future__ import annotations
 

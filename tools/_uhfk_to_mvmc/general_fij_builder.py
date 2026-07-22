@@ -1,7 +1,6 @@
-"""v3 InOrbitalGeneral F builder (Sz-fixed 2Sz≠0 A + Sz-free non-mixed B).
+"""InOrbitalGeneral F builder (Sz-fixed 2Sz≠0 A + Sz-free non-mixed B).
 
-Spec: docs/superpowers/specs/2026-07-01-uhfk-mvmc-pairproduct-general-v3-design.md
-      §3.1-§3.5, §4.1
+See docs/en/source/algorithm/uhfk_to_mvmc.rst for the construction.
 """
 from __future__ import annotations
 
@@ -14,7 +13,7 @@ def compute_canonical_reps(
 ) -> tuple[list[int], list[int]]:
     """Pick one canonical row per unordered {k, partner(k)} pair.
 
-    Rules (spec §3.3):
+    Rules (see docs/en/source/algorithm/uhfk_to_mvmc.rst):
       - self-pair k (partner_rows[k] == k): k is canonical.
       - non-self-pair {k, partner(k)}: canonical = row whose
         wavevector_index tuple is lexicographically smaller
@@ -83,7 +82,7 @@ def validate_general_prerequisites(
 
     Raises ValueError with a diagnostic message on:
       - Any column_spin value not in {0, 1} when ``is_soc_mode`` is False
-        (mixed block; v3 scope only)
+        (mixed block; unsupported on the non-SOC path)
       - Any column_spin value not in {-1, 0, 1} when ``is_soc_mode`` is True
         (SOC path accepts mixed-block sentinel -1)
       - Ncond odd (mVMC PairProduct requires even Ne)
@@ -93,15 +92,16 @@ def validate_general_prerequisites(
         non-SOC only)
       - Self-pair canonical k: n_excess_up_k odd OR n_excess_down_k odd
         (non-SOC only)
-      - When ``is_soc_mode`` is True (spec §3.6): non-self canonical
+      - When ``is_soc_mode`` is True: non-self canonical
         (k, p) with n_occ(k) != n_occ(p) OR self canonical k with odd
         n_occ(k)
 
-    ``is_soc_mode`` (default ``False``) is the v3.1 SOC dispatch flag
+    ``is_soc_mode`` (default ``False``) is the SOC dispatch flag
     threaded through by the CLI. When True, the mixed-block column_spin
     guard is relaxed to accept the -1 sentinel and SOC-specific spin-
     agnostic occupation prerequisites (n_occ balance, self-pair parity)
-    are enforced as upfront preconditions before pair emission.
+    are enforced as upfront preconditions before pair emission. See
+    docs/en/source/algorithm/uhfk_to_mvmc.rst for partner balance.
     """
     column_spin = np.asarray(column_spin, dtype=np.int64)
     stepped_occupation = np.asarray(stepped_occupation, dtype=np.float64)
@@ -113,13 +113,12 @@ def validate_general_prerequisites(
                 column_spin[(column_spin != 0) & (column_spin != 1)]
             )
             raise ValueError(
-                f"v3 scope: column_spin contains mixed block value(s) "
-                f"{offending.tolist()}; mixed block / SOC support is "
-                "handled by the SOC path in v3.1 (pass is_soc_mode=True) "
-                "or deferred (see spec §1, §7)"
+                "column_spin contains mixed-block values "
+                f"{offending.tolist()}; pass is_soc_mode=True for the "
+                "SOC path"
             )
     else:
-        # v3.1 SOC path: accept column_spin in {-1} for mixed block, or
+        # The SOC path accepts column_spin in {-1} for mixed block, or
         # {0, 1} for degenerate SOC states.
         allowed = np.isin(column_spin, [-1, 0, 1])
         if not np.all(allowed):
@@ -128,8 +127,8 @@ def validate_general_prerequisites(
                 f"SOC path: column_spin values {offending.tolist()} not "
                 "recognized (expected in {-1, 0, 1})"
             )
-        # v3.1 SOC path: spin-agnostic occupation prerequisites
-        # (spec §3.6). Mirrors the pair-emission-time guards in
+        # Enforce spin-agnostic SOC occupation prerequisites. This mirrors
+        # the pair-emission-time guards in
         # ``build_pair_list`` but surfaces them as upfront preconditions.
         for k in range(stepped_occupation.shape[0]):
             p = int(partner_rows[k])
@@ -211,7 +210,7 @@ def build_pair_list(
 ) -> list:
     """Emit the ordered pair list for General F construction.
 
-    v3 path (``is_soc_mode=False``, spec §3.3):
+    General path (``is_soc_mode=False``):
       Each pair is emitted from a canonical (k, partner(k)) block as a
       dict ``{"alpha": (k_row, col, spin_label),
                "beta":  (k_row, col, spin_label)}``.
@@ -225,7 +224,7 @@ def build_pair_list(
         2. (up@k, up@k) - same-spin up excess (2-at-a-time)
         3. (down@k, down@k) - same-spin down excess (2-at-a-time)
 
-    v3.1 SOC path (``is_soc_mode=True``, spec §3.5):
+    SOC path (``is_soc_mode=True``):
       Column-index-based pairing, spin-agnostic (column_spin is not
       consulted). Each pair is emitted as a nested tuple
       ``((k_row_alpha, col_alpha), (k_row_beta, col_beta))``. Both
@@ -242,6 +241,9 @@ def build_pair_list(
       Self canonical k (k == partner(k)):
         Pair consecutive occupied columns (0, 1), (2, 3), .... Requires
         ``n_occ(k)`` even; an odd count raises ``ValueError``.
+
+    See docs/en/source/algorithm/uhfk_to_mvmc.rst for canonical-pair
+    selection and partner balance.
     """
     partner_rows = np.asarray(partner_rows, dtype=np.int64)
 
@@ -360,37 +362,36 @@ def build_slater_orbitals(
     is_soc_mode: bool = False,
 ) -> np.ndarray:
     """Extract physical Slater orbitals for every pair member into a
-    (2*Ns_phys, 2*len(pair_list)) complex matrix A (spec §3.1, §4.1).
+    (2*Ns_phys, 2*len(pair_list)) complex matrix A.
 
     Column layout: for pair index p in [0, len(pair_list)):
       - A[:, 2*p]     = ψ_alpha(i, spin_alpha)  (top half if alpha is up)
       - A[:, 2*p+1]   = ψ_beta (i, spin_beta )  (top half if beta is up)
 
-    Amplitudes follow the v2.1 positive-Bloch convention (spec §3.1):
+    Amplitudes follow the documented positive-Bloch convention:
       ψ_alpha(i, sigma) = v[k_alpha, row(sigma, sub_offset(r_i)), col_alpha]
                        * exp(+i k_folded · folded_cell(r_i))
                        * exp(+i theta · r_i / L_phys)
                        / sqrt(nvol_folded)
 
     Non-zero only when sigma == column_spin[col_alpha] (mixed block is
-    out of scope in v3).
+    unsupported on the non-SOC path).
 
-    ``is_soc_mode`` (default ``False``) is the v3.1 SOC dispatch flag
+    ``is_soc_mode`` (default ``False``) is the SOC dispatch flag
     threaded through by the CLI. When True, A is built on the unified
     mVMC spin-block row index ``all_i = r_phys + spin * Ns_phys``
-    (site-major, spin-minor; spec §3.4), and ``pair_list`` entries are
-    ``(alpha_1, alpha_2)`` column-index tuples (spec §3.5) instead of
-    v3's spin-labelled dicts. H-wave's interleaved eigenvector row
+    (site-major, spin-minor), and ``pair_list`` entries are
+    ``(alpha_1, alpha_2)`` column-index tuples instead of spin-labelled
+    dicts. H-wave's interleaved eigenvector row
     ``2 * a_folded + spin`` is permuted to spin-block order at read
     time; every (r_phys, spin) row is populated per pair column.
 
     Under SOC + SubShape > [1, 1, 1], the plane-wave phase carries the
-    intra-cell displacement via ``folded_cell + sub_offset`` (see v3.4
-    fix below). This is the single shipping convention; the v3.5 density
+    intra-cell displacement via ``folded_cell + sub_offset``. The density
     gate (``compare_against_green_sublattice(is_soc_sublattice_mode=True)``)
     validates the shipping A directly by lifting ``green_sublattice`` to
     the physical basis via ``gauge_lift``, so no dual-A / reference-A
-    scaffold is required.
+    scaffold is required. See docs/en/source/algorithm/uhfk_to_mvmc.rst.
     """
     from .sublattice_unfold import (
         decode_physical_site,
@@ -409,7 +410,8 @@ def build_slater_orbitals(
     Ns_phys = site_positions.shape[0]
     nvol_folded = wavevector_index.shape[0]
     subvol = int(np.prod(subshape))
-    norb_folded = subvol  # v3 requires norb_orig == 1
+    # This path requires norb_orig == 1, so norb_folded equals subvol.
+    norb_folded = subvol
     L_folded = (cell_shape // subshape).astype(np.float64)
     L_phys = cell_shape.astype(np.float64)
 
@@ -418,7 +420,8 @@ def build_slater_orbitals(
 
     # Pre-compute per-site (folded_cell, sub_offset, folded_orb) for row
     # lookup. sub_offset is retained separately because the SOC branch
-    # plane-wave uses ``folded_cell + sub_offset`` (see v3.4 fix below).
+    # plane-wave uses ``folded_cell + sub_offset``; see
+    # docs/en/source/algorithm/uhfk_to_mvmc.rst.
     folded_cell = np.empty((Ns_phys, 3), dtype=np.int64)
     sub_offset_per_site = np.empty((Ns_phys, 3), dtype=np.int64)
     folded_orb_per_site = np.empty(Ns_phys, dtype=np.int64)
@@ -435,11 +438,11 @@ def build_slater_orbitals(
     phys_up = np.exp(+1j * phys_arg)
 
     if is_soc_mode:
-        # v3.1 SOC branch (spec §3.4). A rows are indexed in mVMC
+        # On the SOC branch, A rows are indexed in mVMC
         # site-major spin-block order all_i = r_phys + spin * Ns_phys.
         # H-wave's eigenvector rows use the interleaved SOC packing
         # 2 * a_folded + spin, so we permute at read time.
-        # Under v3.1 single-orbital scope (norb_orig == 1),
+        # Under the single-orbital constraint (norb_orig == 1),
         # folded_orb_per_site[i] is a_folded for site i (sublattice
         # index within its folded cell); for SubShape=[1,1,1] it is 0.
         # pair_list entries are nested tuples
@@ -449,13 +452,13 @@ def build_slater_orbitals(
         # refers to a different eigenstate, so we must NOT sum over k
         # when reading the eigenvector).
         #
-        # Plane-wave sign convention (spec §3.1): H-wave's k-space
+        # Plane-wave sign convention: H-wave's k-space
         # Hamiltonian is FFT'd with ``ifftn(..., norm='forward')``
         # (uhfk._make_ham_trans:1147), which uses the positive-Bloch
         # convention ``c_k = (1/sqrt(N)) Σ_R exp(+i k R) c_R``. Under
         # this convention the Bloch amplitude at real-space site R is
         # ``psi_alpha(R, s) = V[k, s, alpha] * exp(-i k R) / sqrt(N)``.
-        # The v3 non-SOC branch below still uses the ``+i k R`` sign
+        # The non-SOC branch below still uses the ``+i k R`` sign
         # (its docstring calls this "positive-Bloch convention" — that
         # name refers to the sign of the plane_wave factor in the
         # bridge, not H-wave's Fourier convention). For non-SOC every
@@ -467,7 +470,7 @@ def build_slater_orbitals(
         # combined with H-wave's own convention would flip the sign of
         # every s != t density entry and trip
         # ``compare_against_onebodyg_uhf_general``. The pair emission
-        # rule (§3.5) pairs (k, partner(k)) with partner(k) = -k mod L,
+        # rule pairs (k, partner(k)) with partner(k) = -k mod L,
         # so k_alpha + k_beta ≡ 0 in every pair and the F matrix is
         # invariant under this sign flip; the emitted F (and therefore
         # every mVMC observable) is unchanged.
@@ -478,7 +481,7 @@ def build_slater_orbitals(
             2.0 * np.pi
             * wavevector_index.astype(np.float64) / L_folded
         )
-        # v3.4 SOC + SubShape > [1, 1, 1] plane-wave fix. Under
+        # Under SOC + SubShape > [1, 1, 1],
         # ``SubShape > [1, 1, 1]`` H-wave's k-space Hamiltonian folds the
         # original lattice into a supercell where each folded cell holds
         # ``subvol`` sublattice slots. Reconstructing the physical Bloch
@@ -489,26 +492,23 @@ def build_slater_orbitals(
         # intra-supercell displacement into the Bloch factor; without it
         # the reconstructed A columns give the right density only when
         # ``ir(r_i) == ir(r_j)`` and produce wrong off-diagonal (in ir)
-        # density entries (bug pattern verified against ComplexUHF SCF
-        # ground truth on case_soc_rashba_2d_sub: pre-fix bridge density
-        # matched cx cisajs only for ir_i == ir_j pairs, disagreed by
-        # up to 0.24 for ir_i != ir_j pairs — see spec §4.4 v3.4 audit).
+        # density entries. See
+        # docs/en/source/algorithm/uhfk_to_mvmc.rst.
         # Under ``SubShape = [1, 1, 1]``, ``sub_offset`` is always zero
-        # so this fix reduces to the pre-v3.4 formula and the SOC-only
-        # (SubShape=[1,1,1]) fixtures are bit-identical.
+        # so the expression reduces to the SOC-only
+        # (SubShape=[1,1,1]) formula.
         kf_dot_r = np.einsum(
             "kd,id->ki", k_folded_all,
             (folded_cell + sub_offset_per_site).astype(np.float64),
         )
-        # v3.2 SOC + APBC gauge fix. The SOC branch reads folded
+        # The SOC + APBC branch reads folded
         # eigenvectors under the negative-Bloch convention
         # ``psi_alpha(R) = V[k, ...] * exp(-i k R) / sqrt(N)``, so the
         # twist gauge on the *same* branch must also be
         # ``exp(-i theta r / L_phys)`` for the k -> k + theta/L shift
         # to compose cleanly (each Bloch factor picks up the same twist
         # sign as its ``exp(-i k R)`` prefactor). Under PBC ``theta = 0``
-        # this multiplication is trivially 1 so the SOC+PBC fixture is
-        # bit-identical to the pre-fix output. Under APBC using
+        # this multiplication is trivially 1. Under APBC using
         # ``phys_up = exp(+i theta r / L)`` here would leave every pair
         # product ``plane_wave_a * plane_wave_b`` carrying an
         # ``exp(+i 2*theta*r/L)`` factor that does NOT cancel the folded
@@ -516,8 +516,8 @@ def build_slater_orbitals(
         # residue in the twisted mesh); the residual would appear as a
         # per-site ``(-1)^{r_x}`` alternation in F on-site diagonal
         # blocks and trip
-        # ``aggregate_general_orbital_params`` class-consistency (spec
-        # §4.3). The non-SOC (positive-Bloch) branch retains
+        # ``aggregate_general_orbital_params`` class-consistency. The
+        # non-SOC (positive-Bloch) branch retains
         # ``exp(+i theta r / L)`` because its plane-wave sign is ``+i k R``.
         phys_dn = np.exp(-1j * phys_arg)
         plane_wave_soc = (
@@ -543,7 +543,8 @@ def build_slater_orbitals(
                     )
                     amp = plane_wave_member * v_vals
                     # Row assignment: all_i = r_phys + spin * Ns_phys
-                    # (site-major, spin-minor); spec §3.4.
+                    # (site-major, spin-minor); see
+                    # docs/en/source/algorithm/uhfk_to_mvmc.rst.
                     row_start = spin * Ns_phys
                     A_soc[row_start:row_start + Ns_phys, slater_col] = amp
         return A_soc
@@ -563,7 +564,7 @@ def build_slater_orbitals(
                 "d,id->i", k_folded, folded_cell.astype(np.float64)
             )
             plane_wave = np.exp(+1j * kf_dot_fc) * inv_sqrt * phys_up
-            # Which nd rows to read: pure-spin per v3 scope.
+            # Read pure-spin nd rows.
             row_up, row_dn = np.empty(Ns_phys, dtype=np.int64), np.empty(
                 Ns_phys, dtype=np.int64
             )
@@ -589,12 +590,13 @@ def build_slater_orbitals(
 
 def build_fij_general(A: np.ndarray) -> np.ndarray:
     """Assemble the antisymmetric F matrix from the 2-column-per-pair
-    Slater amplitude matrix A (spec §3.3).
+    Slater amplitude matrix A.
 
     F[iσ, jσ'] = sum_{p} [ A[iσ, 2p] * A[jσ', 2p+1]
                           - A[iσ, 2p+1] * A[jσ', 2p] ]
 
-    F.shape = (A.shape[0], A.shape[0]) and F.T = -F elementwise.
+    F.shape = (A.shape[0], A.shape[0]) and F.T = -F elementwise. See
+    docs/en/source/algorithm/uhfk_to_mvmc.rst.
     """
     A = np.asarray(A, dtype=np.complex128)
     n_row = A.shape[0]

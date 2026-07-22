@@ -1,6 +1,6 @@
 """Unit tests for tools/_uhfk_to_mvmc/boundary_input.py.
 
-Covers §3.1 of docs/superpowers/specs/2026-07-01-uhfk-mvmc-pairproduct-general-v31-design.md:
+It covers:
   - absent-key -> all-PBC default (matches UHFk)
   - container-shape / element-type checks (bridge-side)
   - delegation to hwave.solver._apbc_phase.normalize_boundary_condition

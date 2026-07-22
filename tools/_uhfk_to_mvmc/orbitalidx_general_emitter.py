@@ -1,4 +1,4 @@
-"""Bridge-side all-unique-classes ``orbitalidxgen.def`` emitter (v3.2).
+"""Bridge-side all-unique-classes ``orbitalidxgen.def`` emitter.
 
 Under ``enable_spin_orbital = true`` + ``SubShape > [1, 1, 1]``,
 StdFace's ``orbitalidxgen.def`` over-groups pair classes because the
@@ -7,7 +7,7 @@ pairs by the ORIGINAL lattice translation invariance. SOC combined with
 sublattice folding keeps only supercell (folded) translation invariance,
 so on-site pairs at different sublattice slots have different physical F
 values — StdFace's over-grouping merges them into a single class and the
-bridge's class-consistency check (spec §4.3) fires with residuals of
+bridge's class-consistency check fires with residuals of
 order 1e-1.
 
 The emitter bypasses the over-grouping by assigning every non-redundant
@@ -20,6 +20,9 @@ Format matches the mVMC ``InOrbitalGeneral`` schema (readdef.c
 GetInfoOrbitalGeneral): 5 header lines + ``2*Ns^2 - Ns`` mapping rows
 (upper triangle only, sign always +1) + ``NOrbitalIdx = 2*Ns^2 - Ns``
 optimize-flag rows.
+
+See docs/en/source/uhfk/tools/uhfk_to_mvmc.rst for the emission and
+class-consistency contracts.
 """
 from __future__ import annotations
 

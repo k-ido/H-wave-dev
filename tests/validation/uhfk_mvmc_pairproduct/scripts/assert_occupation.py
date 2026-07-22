@@ -1,4 +1,4 @@
-"""Shared target-occupation assertion helper (spec §4.1, §6.1, §6.2).
+"""Shared target-occupation assertion helper.
 
 Both pytest and the mVMC E2E validation harness (`run.sh`) invoke this
 helper immediately after H-wave SCF, BEFORE the bridge runs. Target
@@ -36,15 +36,14 @@ _CASE_TARGETS: dict[str, dict] = {
     "case_pbc_sz2": {
         # Target FM UHF ground state at PBC L=8, U small enough to
         # remain paramagnetic-like: 3 up (at k=0, ±2π/8=±π/4) + 1 down
-        # (at k=0). Spec §6.2 justification: cross pair at self-pair k=0
+        # (at k=0). The target has a cross pair at self-pair k=0
         # + same-spin up-up excess at non-self (+π/4, -π/4) block.
         "up": [(0, 0, 0), (1, 0, 0), (-1, 0, 0)],
         "down": [(0, 0, 0)],
     },
     "case_zeeman_sz_free": {
         # 1D L=8 PBC Hubbard with Ne=4, no 2Sz constraint, flag_fock=false.
-        # Plan intent was an on-site Zeeman-like Transfer entry to force a
-        # definite state, but H-wave's uhfk drops spin-block Transfer
+        # H-wave's uhfk drops spin-block Transfer
         # indices when enable_spin_orbital=false (uhfk.py:1136-1146) and
         # the Hermite check hard-errors on them (uhfk.py:879). The
         # bridge in turn rejects enable_spin_orbital=true, so the Zeeman
@@ -53,20 +52,20 @@ _CASE_TARGETS: dict[str, dict] = {
         # symmetry-broken FM state selected by the initial random Green
         # seed: Ne_up=3 at k=0 and ±π/4, Ne_down=1 at k=0 — the same
         # target occupation as case_pbc_sz2 but reached via the Sz-free
-        # (single-mu-group, no 2Sz) branch, which is exactly the B ケース
-        # that Task 10 exercises. §3.2 walkthrough (canonical blocks):
+        # (single-mu-group, no 2Sz) branch. Canonical blocks:
         #   self k=0:    NN_up=1, NN_down=1 → n_cross=1, excess=0/0 ✓
         #   self k=π:    empty ✓
         #   (+1,-1):     NN_up_k=NN_up_p=1, NN_down=0 → excess_up_k=
         #                 excess_up_p=1 (same-spin up-up pair) ✓
         #   (+2,-2):     empty ✓
         #   (+3,-3):     empty ✓
-        # Ne = 4 (even).
+        # Ne = 4 (even). See
+        # ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
         "up": [(0, 0, 0), (1, 0, 0), (-1, 0, 0)],
         "down": [(0, 0, 0)],
     },
     "case_soc_rashba_2d_nosub": {
-        # 2D 4x4 Rashba + Hubbard SOC (v3.1 C case, no sublattice
+        # 2D 4x4 Rashba + Hubbard SOC (no sublattice
         # folding). CellShape = [4, 4, 1], SubShape = [1, 1, 1], Ncond = 6.
         # Under SOC column_spin is packed (== -1), so target is the total
         # spin-summed occupation per folded k-row; the SCF at t=1,
@@ -82,7 +81,7 @@ _CASE_TARGETS: dict[str, dict] = {
         },
     },
     "case_soc_rashba_2d_nosub_apbc": {
-        # 2D 4x4 Rashba + Hubbard SOC + APBC in x (v3.2 case, no
+        # 2D 4x4 Rashba + Hubbard SOC + APBC in x (no
         # sublattice folding). CellShape = [4, 4, 1], SubShape = [1, 1, 1],
         # Ncond = 8, BoundaryCondition = ["antiperiodic", "periodic",
         # "periodic"]. The APBC-in-x twist shifts the k-mesh so the
@@ -117,7 +116,7 @@ _CASE_TARGETS: dict[str, dict] = {
         },
     },
     "case_soc_rashba_2d_sub_apbc": {
-        # v3.6 shipping fixture. Same geometry (CellShape [6,4,1] /
+        # Shipping fixture. Same geometry (CellShape [6,4,1] /
         # SubShape [2,2,1]) as case_soc_rashba_2d_sub but with
         # BoundaryCondition = ["antiperiodic", "periodic", "periodic"]
         # (theta = (pi, 0, 0)). The twist shifts the folded k-mesh so
@@ -135,16 +134,14 @@ _CASE_TARGETS: dict[str, dict] = {
         },
     },
     "case_soc_rashba_3d_sub_apbc_xy": {
-        # v3.7 shipping fixture. 3D 4x4x4 lattice, SubShape = [2, 2, 2]
+        # Shipping fixture. 3D 4x4x4 lattice, SubShape = [2, 2, 2]
         # (folded BZ [2, 2, 2], 8 k rows), BoundaryCondition =
         # ["antiperiodic", "antiperiodic", "periodic"] (theta = (pi, pi,
-        # 0), xy-plane APBC). Ncond = 20, pinned in Phase 2b across all 4
-        # v3.7 siblings (see README.md). Unlike the 2D fixtures, every one
+        # 0), xy-plane APBC). Ncond = 20 across all four siblings (see
+        # README.md). Unlike the 2D fixtures, every one
         # of the 8 folded k rows is occupied here: the 4 rows with
         # k_z = 0 carry 3 carriers each and the 4 rows with k_z = -1 carry
-        # 2 each. Sum = 4*3 + 4*2 = 20 = Ncond. Measured from fresh
-        # H-wave SCF output (converged at iteration 38, rest=5.6e-15,
-        # Energy_Total=-81.585984556...) on 2026-07-13.
+        # 2 each. Sum = 4*3 + 4*2 = 20 = Ncond.
         "n_per_k": {
             (0, 0, 0): 3,
             (0, 0, -1): 2,
@@ -157,15 +154,13 @@ _CASE_TARGETS: dict[str, dict] = {
         },
     },
     "case_soc_rashba_3d_sub_apbc_xz": {
-        # v3.7 shipping fixture. Same lattice as
+        # Shipping fixture. Same lattice as
         # case_soc_rashba_3d_sub_apbc_xy but BoundaryCondition =
         # ["antiperiodic", "periodic", "antiperiodic"] (theta = (pi, 0,
         # pi), xz-plane APBC). Ncond = 20 (same cross-fixture pin). All 8
         # folded k rows occupied: 2 rows carry 4 carriers each
         # ((0, 0, -1) and (-1, 0, 0)) and the remaining 6 rows carry 2
-        # each. Sum = 2*4 + 6*2 = 20 = Ncond. Measured from fresh H-wave
-        # SCF output (converged at iteration 38, rest=5.6e-15,
-        # Energy_Total=-82.159807378...) on 2026-07-13.
+        # each. Sum = 2*4 + 6*2 = 20 = Ncond.
         "n_per_k": {
             (0, 0, 0): 2,
             (0, 0, -1): 4,
@@ -178,21 +173,20 @@ _CASE_TARGETS: dict[str, dict] = {
         },
     },
     "case_soc_rashba_3d_sub_apbc_yz": {
-        # v3.7 shipping fixture. Same lattice as
+        # Shipping fixture. Same lattice as
         # case_soc_rashba_3d_sub_apbc_xy but BoundaryCondition =
         # ["periodic", "antiperiodic", "antiperiodic"] (theta = (0, pi,
         # pi), yz-plane APBC). Ncond = 24 -- NOT the cross-fixture
         # Ncond=20 pin used by xy/xz: at Ncond=20 this fixture violates
         # build_pair_list's SOC pairing invariant n_occ(k) ==
         # n_occ(partner(k)) (k=2 vs partner=1: 2 != 4), which blocks
-        # Phase 2d composite manifest generation. Ncond=24 is the value
-        # that satisfies both the spec's gap>=5e-2 floor and the
+        # composite manifest generation. Ncond=24 is the value
+        # that satisfies both the gap>=5e-2 floor and the
         # partner-balance invariant (see README.md "Ncond selection").
         # All 8 folded k rows occupied: 4 rows carry 4 carriers each
         # ((0,0,0), (0,0,-1), (0,-1,0), (0,-1,-1)) and the remaining 4
-        # rows carry 2 each. Sum = 4*4 + 4*2 = 24 = Ncond. Measured from
-        # fresh H-wave SCF output (converged at iteration 38,
-        # rest=6.154e-15, Energy_Total=-91.053487053...) on 2026-07-13.
+        # rows carry 2 each. Sum = 4*4 + 4*2 = 24 = Ncond. See
+        # ``docs/en/source/algorithm/uhfk_to_mvmc.rst`` for partner balance.
         "n_per_k": {
             (0, 0, 0): 4,
             (0, 0, -1): 4,
@@ -205,22 +199,21 @@ _CASE_TARGETS: dict[str, dict] = {
         },
     },
     "case_soc_rashba_3d_sub_apbc_xyz": {
-        # v3.7 shipping fixture. Same lattice as
+        # Shipping fixture. Same lattice as
         # case_soc_rashba_3d_sub_apbc_xy but BoundaryCondition =
         # ["antiperiodic", "antiperiodic", "antiperiodic"] (theta = (pi,
         # pi, pi), full 3D APBC). Ncond = 12 -- NOT the cross-fixture
         # Ncond=20 pin used by xy/xz: at Ncond=20 this fixture violates
         # build_pair_list's SOC pairing invariant n_occ(k) ==
         # n_occ(partner(k)) (k=4 vs partner=3: 2 != 4), which blocks
-        # Phase 2d composite manifest generation. Ncond=12 is the ONLY
-        # value in {12,...,24} that satisfies both the spec's gap>=5e-2
+        # composite manifest generation. Ncond=12 is the ONLY
+        # value in {12,...,24} that satisfies both the gap>=5e-2
         # floor and the partner-balance invariant (see README.md "Ncond
         # selection"). All 8 folded k rows occupied: 4 rows carry 2
         # carriers each ((0,0,-1), (0,-1,-1), (-1,0,0), (-1,-1,0)) and
         # the remaining 4 rows carry 1 each. Sum = 4*2 + 4*1 = 12 =
-        # Ncond. Measured from fresh H-wave SCF output (converged at
-        # iteration 37, rest=8.702e-15, Energy_Total=-55.672715711...)
-        # on 2026-07-13.
+        # Ncond. See ``docs/en/source/algorithm/uhfk_to_mvmc.rst`` for
+        # partner balance.
         "n_per_k": {
             (0, 0, 0): 1,
             (0, 0, -1): 2,

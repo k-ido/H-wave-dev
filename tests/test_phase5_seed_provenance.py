@@ -1,4 +1,4 @@
-"""Phase 5 initial.def provenance producer contract tests."""
+"""initial.def provenance producer contract tests."""
 from __future__ import annotations
 
 import hashlib
@@ -33,7 +33,7 @@ def _load_seed_module():
 
 def _phase5_mask_dispatch_block() -> str:
     text = _RUN_SH.read_text()
-    start = text.index("  # Phase 5 static/live gates are v3.7-only.")
+    start = text.index("  # Static/live gates apply to the 3D APBC cases.")
     end = text.index("  # normalize_mvmc_output", start)
     return text[start:end]
 
@@ -63,7 +63,7 @@ def test_phase5_mask_dispatch_rejects_unknown_v37_case(tmp_path):
     )
 
     assert result.returncode == 1
-    assert "unknown v3.7 case name" in result.stderr
+    assert "unknown case name" in result.stderr
     assert "define PHASE5_EXPECTED_MASK" in result.stderr
 
 
@@ -150,13 +150,13 @@ def _phase5_launch_dispatch_block() -> str:
     [
         (
             "1, 1, 0",
-            "Phase 5 gated ComplexUHF run failed (gate check or solver); tail uhf.log:",
+            "Gated ComplexUHF run failed (gate check or solver); tail uhf.log:",
             "ComplexUHF UHF failed; tail uhf.log:",
         ),
         (
             "",
             "ComplexUHF UHF failed; tail uhf.log:",
-            "Phase 5 gated ComplexUHF run failed (gate check or solver); tail uhf.log:",
+            "Gated ComplexUHF run failed (gate check or solver); tail uhf.log:",
         ),
     ],
 )
@@ -201,12 +201,12 @@ def test_phase5_run_sh_uses_sole_entry_point_and_preserves_v36_launch():
     assert "run_live_uhf_smoke" not in phase5_block
     assert phase5_block.count("from tools._uhfk_to_mvmc.phase5_gate import") == 1
     assert (
-        'echo "Phase 5 gated ComplexUHF run failed (gate check or solver); tail uhf.log:" >&2'
+        'echo "Gated ComplexUHF run failed (gate check or solver); tail uhf.log:" >&2'
         in phase5_block
     )
     assert (
         '    else\n'
-        '      # Preserve the established v3.6 launch path byte-for-byte.\n'
+        '      # Preserve the established launch path byte-for-byte.\n'
         '      run_native "${UHF}" namelist.def > uhf.log 2>&1 || {\n'
         '        echo "ComplexUHF UHF failed; tail uhf.log:" >&2\n'
         '        tail -50 uhf.log >&2\n'
@@ -341,7 +341,7 @@ def test_phase5_run_sh_guards_modpara_override_with_explicit_case_split():
     ) in block
     assert (
         'case_soc_rashba_3d_sub_apbc_*)\n'
-        '        # The committed v3.7 modpara.def is authoritative.\n'
+        '        # The committed modpara.def is authoritative.\n'
         '        ;;'
     ) in block
     assert '[[ -f "${COMPLEXUHF_CASE}/complexuhf_modpara_override.txt" ]]' not in block

@@ -113,7 +113,7 @@
   },
   "i_c": 2,
   "j_c": 61,
-  "manifest_schema": "v3.7-30entry",
+  "manifest_schema": "per-direction-30entry",
   "ncond": 12,
   "s_c": 0,
   "site_position_i": [

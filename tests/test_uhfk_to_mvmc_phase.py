@@ -1,14 +1,15 @@
 """Verify F has subtract (r_j - r_i) phase under APBC and the density check
 sees the matching positive-theta phase for G - these must NOT be confused.
 
-Background: Codex's APBC review (post-Task-11) showed that the original
-add-add (r_i + r_j) formulation in spec section 3.4 came from the
-operator-level F coefficient transformation, but the F that mVMC must
-read is the amplitude product F = A_up @ A_down.T of the physical
-(k, -k) pair, which carries SUBTRACT structure exp(+i k_phys (r_j - r_i))
-once theta and tilde_k are combined consistently. The bridge implementation
-follows that subtract convention so the per-spin density matches H-wave's
-``_save_greenone`` output (G_phys = exp(+i theta (r_i - r_j) / L) G_tilde).
+The operator-level F coefficient transformation has add-add
+``(r_i + r_j)`` structure, but the F that mVMC reads is the amplitude
+product ``F = A_up @ A_down.T`` of the physical ``(k, -k)`` pair. It
+therefore carries subtract structure ``exp(+i k_phys (r_j - r_i))`` once
+theta and tilde_k are combined consistently. The bridge follows that
+convention so the per-spin density matches H-wave's ``_save_greenone``
+output: ``G_phys = exp(+i theta (r_i - r_j) / L) G_tilde``.
+
+See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
 """
 from __future__ import annotations
 
@@ -28,11 +29,13 @@ def _klist(n):
 
 def test_apbc_l8_fij_carries_subtract_phase():
     """For APBC L=8, single occupied (k, -k) pair with v=1, F_phys carries
-    exp(-i k_phys (r_j - r_i)) under the v2.1 positive-Bloch convention
-    (spec §3.3). With tilde_k=0 occupied (k_phys = theta/L = pi/L for
+    exp(-i k_phys (r_j - r_i)) under the positive-Bloch convention.
+    With tilde_k=0 occupied (k_phys = theta/L = pi/L for
     APBC), F[i, j] = (1/L) exp(-i pi (r_j - r_i) / L). The convention
     matches H-wave's ``greenone.dat`` for physical UHF SCF outputs
-    (verified element-wise for the SubShape=[2,1,1] fixture)."""
+    (verified element-wise for the SubShape=[2,1,1] fixture). See
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
+    """
     L = 8
     wv = np.array([[v, 0, 0] for v in _klist(L)], dtype=np.int64)
     site_positions = np.array([[i, 0, 0] for i in range(L)], dtype=np.float64)
@@ -60,14 +63,14 @@ def test_apbc_l8_fij_carries_subtract_phase():
 
     for i in range(L):
         for j in range(L):
-            # Positive-Bloch v2.1 convention: F[i, j] = (1/L)
+            # Positive-Bloch convention: F[i, j] = (1/L)
             # exp(-i k_phys (r_j - r_i)) with k_phys = pi/L for
             # tilde_k=0 up occupied.
             expected = (1.0 / L) * np.exp(-1j * np.pi * (j - i) / L)
             assert abs(F[i, j] - expected) < 1e-12, (
                 f"F[{i},{j}]={F[i,j]} expected={expected}"
             )
-            # And it must NOT match the pre-v2.1 add-add convention.
+            # It must not match the distinguishing add-add negative control.
             wrong = (1.0 / L) * np.exp(-1j * np.pi * (i + j) / L)
             if abs(expected - wrong) > 1e-10:
                 assert abs(F[i, j] - wrong) > 1e-10, (
@@ -76,17 +79,17 @@ def test_apbc_l8_fij_carries_subtract_phase():
 
 
 def test_apbc_l8_density_matches_hwave_positive_bloch_for_n1():
-    """For APBC L=8 with only tilde_k = 1 occupied (Codex's test case
-    updated for v2.1), the per-spin density G_up[0, 1] from the bridge
-    must equal H-wave's physical Green under the positive-Bloch spec
-    §3.3 convention.
+    """For APBC L=8 with only tilde_k = 1 occupied, the per-spin density
+    G_up[0, 1] from the bridge must equal H-wave's physical Green under
+    the positive-Bloch convention.
 
-    H-wave (v2.1 convention verified against the SubShape=[2,1,1]
+    H-wave (verified against the SubShape=[2,1,1]
     fixture greenone.dat to 1e-14):
       G_phys[i, j] = (1/N) sum_k |v(k)|^2 exp(+i k_phys (r_j - r_i))
     with k_phys = tilde_k + theta/L (positive-Bloch mapping). For
     N=8, theta=pi, tilde_k=2*pi/8, i=0, j=1, |v|=1:
       G_phys[0, 1] = (1/8) exp(+i pi/8 + i 2pi/8) = (1/8) exp(+i 3pi/8).
+    See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     L = 8
     wv = np.array([[v, 0, 0] for v in _klist(L)], dtype=np.int64)

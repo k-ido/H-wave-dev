@@ -40,7 +40,6 @@ def _make_stub_solver(boundary_theta):
         rng.standard_normal((L, 2, 1, 2, 1))
         + 1j * rng.standard_normal((L, 2, 1, 2, 1))
     ).astype(np.complex128)
-    # APBC bookkeeping (added by Task 3):
     s.boundary_theta = tuple(boundary_theta)
     s.boundary_periodic = all(t == 0.0 for t in boundary_theta)
     return s
@@ -133,7 +132,7 @@ def test_apbc_diagonal_pairs_unchanged():
 
 
 def test_end_to_end_physical_green_matches_analytic_1d():
-    """End-to-end gauge-convention check (Codex Finding 1).
+    """End-to-end gauge-convention check.
 
     1) Analytic physical Green for closed-shell half-filled L=4 1D free
        fermion APBC, computed directly from physical k = (2 pi n + pi) / L.

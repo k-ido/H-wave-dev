@@ -1,4 +1,4 @@
-"""Phase 3e: snapshot-workspace rejection guard for compare.py + G4 guard.
+"""Snapshot-workspace rejection guard for compare.py and the G4 guard.
 
 Both ``compare.py --workspace <ws> --mode <mode>`` and
 ``soc_apbc_topology_guard.py --workspace <ws> --mode g4 --composite-manifest ...``
@@ -8,7 +8,7 @@ canonical path of a shipped-in artifact under it) lives under
 either helper at the unit-test snapshot fixtures and mint a green
 anchored PASS record without exercising the producer chain.
 
-Test matrix (spec §6.4 addendum, plan Task 3e):
+The test matrix covers:
 
 1. workspace-root literal ``tests/data``  → reject
 2. workspace-root literal ``tests/data/<file>`` (nonsense subdir under
@@ -18,6 +18,9 @@ Test matrix (spec §6.4 addendum, plan Task 3e):
 
 Each case runs against both compare.py (mode=g0-writer-check) and the
 topology_guard (mode=g4). Total: 4 * 2 = 8 negative tests.
+
+See ``docs/en/source/uhfk/tools/uhfk_to_mvmc.rst`` for the validation
+contract.
 """
 from __future__ import annotations
 
@@ -50,7 +53,7 @@ _REAL_MANIFEST = os.path.join(_REAL_CASE_DIR, "composite_element.json")
 
 @pytest.fixture(scope="module", autouse=True)
 def _real_case_workspace(tmp_path_factory):
-    """Build the positive G4 workspace from tracked v3.6 snapshots."""
+    """Build the positive G4 workspace from tracked snapshots."""
     global _REAL_CASE_DIR, _REAL_MANIFEST
 
     workspace = (
@@ -213,7 +216,7 @@ def test_guard_rejects_artifact_symlinked_to_tests_data(tmp_path):
 
 
 def test_guard_passes_real_fixture_after_snapshot_guard_landed():
-    """The Phase 2g positive baseline still works. If snapshot rejection
+    """The positive baseline still works. If snapshot rejection
     is over-broad and starts refusing legitimate case dirs, this trips."""
     res = _run_guard(_REAL_CASE_DIR)
     assert res.returncode == 0, (
@@ -223,17 +226,13 @@ def test_guard_passes_real_fixture_after_snapshot_guard_landed():
 
 
 # ---------------------------------------------------------------------
-# Codex adversarial-review 2026-07-12 hardening: guard was CWD-dependent.
-# From /tmp with an absolute workspace under tests/data the guard used
-# to allow bypass because Path("tests/data").resolve() failed silently
-# and _resolved_tests_data_roots() returned []. These tests pin the fix
-# by invoking BOTH helpers from a non-repo CWD.
+# Non-repository CWD regression: both helpers must locate ``tests/data``
+# relative to their modules, even when invoked from elsewhere.
 # ---------------------------------------------------------------------
 
 
 def _run_from_non_repo_cwd(cmd):
-    """Invoke the CLI from /tmp so its CWD is NOT the repo. This is the
-    exact attack path Codex demonstrated."""
+    """Invoke the CLI from /tmp so its CWD is not the repository."""
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(
         [str(_REPO_ROOT / "src"), str(_REPO_ROOT)]
@@ -244,9 +243,7 @@ def _run_from_non_repo_cwd(cmd):
 
 
 def test_compare_rejects_tests_data_when_run_from_non_repo_cwd():
-    """Reproduces the Codex adversarial-review demonstration exactly:
-    ``compare.py --workspace <abs tests/data> --mode g2b`` from /tmp
-    MUST reject. Pre-hardening this returned a spurious PASS."""
+    """An absolute ``tests/data`` workspace must be rejected from /tmp."""
     res = _run_from_non_repo_cwd([
         sys.executable, _COMPARE_PATH,
         "--workspace", str(_TESTS_DATA_ROOT),

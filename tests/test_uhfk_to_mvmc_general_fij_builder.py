@@ -1,4 +1,4 @@
-"""Tests for general_fij_builder — v3 InOrbitalGeneral F construction."""
+"""Tests for general_fij_builder InOrbitalGeneral F construction."""
 from __future__ import annotations
 
 import os
@@ -32,7 +32,8 @@ def test_compute_canonical_reps_1d_pbc_l4():
     of wavevector_index tuple: (1,0,0) < (-1,0,0)=(3-4=-1) in signed form."""
     wv = np.array([[v, 0, 0] for v in _klist(4)], dtype=np.int64)
     # For PBC, partner_rows for translation-invariance is m ≡ -n mod L per direction
-    # (v2.1 convention with theta=0 → shift=0).
+    # (theta=0 gives shift=0). See
+    # ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     # _klist(4) = [0, 1, -2, -1]. partner mapping under theta=0:
     # row 0 (n=0) -> partner (m=0) -> row 0 (self)
     # row 1 (n=1) -> partner (m=-1) -> row 3
@@ -58,7 +59,7 @@ def test_validate_general_prerequisites_rejects_mixed_block():
     column_spin = np.array([0, 1, -1, 1], dtype=np.int64)
     partner_rows = np.array([0, 1], dtype=np.int64)
     wavevector_index = np.array([[0, 0, 0], [1, 0, 0]], dtype=np.int64)
-    with pytest.raises(ValueError, match="mixed block"):
+    with pytest.raises(ValueError, match="mixed-block"):
         validate_general_prerequisites(
             Ncond=2, stepped_occupation=stepped, column_spin=column_spin,
             partner_rows=partner_rows, wavevector_index=wavevector_index,
@@ -66,8 +67,8 @@ def test_validate_general_prerequisites_rejects_mixed_block():
 
 
 def test_validate_rejects_mixed_column_spin_when_not_soc_mode():
-    """v3 (is_soc_mode=False): column_spin=-1 still triggers ValueError."""
-    with pytest.raises(ValueError, match="mixed block"):
+    """With is_soc_mode=False, column_spin=-1 triggers ValueError."""
+    with pytest.raises(ValueError, match="mixed-block"):
         validate_general_prerequisites(
             Ncond=2,
             stepped_occupation=np.array([[1.0, 0.0], [0.0, 1.0]]),
@@ -79,7 +80,7 @@ def test_validate_rejects_mixed_column_spin_when_not_soc_mode():
 
 
 def test_validate_accepts_mixed_column_spin_when_soc_mode():
-    """v3.1 (is_soc_mode=True): column_spin=-1 is allowed."""
+    """With is_soc_mode=True, column_spin=-1 is allowed."""
     validate_general_prerequisites(
         Ncond=2,
         stepped_occupation=np.array([[1.0, 0.0], [0.0, 1.0]]),
@@ -104,8 +105,10 @@ def test_validate_rejects_unknown_column_spin_under_soc_mode():
 
 
 def test_validate_soc_rejects_non_self_imbalance():
-    """SOC path: non-self canonical (k, p) with n_occ(k) != n_occ(p) is
-    rejected (spec §3.6)."""
+    """SOC rejects non-self (k, p) with unequal occupations.
+
+    See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
+    """
     # Ncond=2 matches sum=2 so we pass the Ncond parity + sum guards and
     # reach the SOC balance check. Row 0 has 2 occupied columns, row 1
     # has 0, and partners are {0<->1} (non-self) so the imbalance must
@@ -127,11 +130,13 @@ def test_validate_soc_rejects_non_self_imbalance():
 
 
 def test_validate_soc_rejects_self_pair_odd():
-    """SOC path: self canonical k with odd n_occ(k) rejected (spec §3.6).
+    """SOC rejects a self-pair canonical k with odd n_occ(k).
 
     Two self-pair canonical blocks: k=0 has 3 occupied (ODD -> reject);
     k=1 has 1 occupied. Total Ncond=4 is even so the Ncond parity guard
-    is satisfied and the SOC self-pair parity check fires."""
+    is satisfied and the SOC self-pair parity check fires. See
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
+    """
     with pytest.raises(ValueError, match="odd"):
         validate_general_prerequisites(
             Ncond=4,
@@ -202,7 +207,9 @@ def test_build_pair_list_non_self_all_cross_2sz_zero():
     #down_k=#down_p=1, no excess. Expect 2 cross pairs:
       1. (up@k, down@partner)
       2. (up@partner, down@k)
-    Ordering per spec §3.3."""
+    Ordering follows the canonical pair construction documented in
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
+    """
     stepped = np.zeros((2, 4), dtype=np.float64)
     stepped[0, 0] = 1.0  # up @ row 0
     stepped[0, 2] = 1.0  # down @ row 0
@@ -276,10 +283,12 @@ def test_build_fij_general_antisymmetric():
 
 def test_build_fij_general_matches_v21_antiparallel_closed_shell_pbc():
     """Sz-fixed 2Sz=0 PBC L=4 Ne=2 closed shell: General F[i↑, j↓] block
-    must equal v2.1 A_up @ A_down.T (spec §3.4 equivalence).
+    must equal A_up @ A_down.T.
 
     Reuses the free-particle synthetic eigenvector that already covers
-    the v2.1 case in test_uhfk_to_mvmc_fij_builder.py."""
+    the same case in test_uhfk_to_mvmc_fij_builder.py. See
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
+    """
     L = 4
     wv = np.array([[v, 0, 0] for v in _klist(L)], dtype=np.int64)
     site_positions = np.array([[i, 0, 0] for i in range(L)], dtype=np.float64)
@@ -299,14 +308,14 @@ def test_build_fij_general_matches_v21_antiparallel_closed_shell_pbc():
     stepped_occupation[n0, 0] = 1.0
     stepped_occupation[n0, 1] = 1.0
 
-    # v2.1 reference
+    # Reference
     A_up_v21, A_down_v21 = build_amplitudes(
         wv, eigenvector, stepped_occupation, column_spin, column_mu_group,
         site_positions, norb_orig=1, theta=theta, L=L_vec,
     )
     F_v21 = build_fij_phys(A_up_v21, A_down_v21)  # (L, L)
 
-    # v3 General
+    # General
     cell_shape = np.array([L, 1, 1], dtype=np.int64)
     subshape = np.array([1, 1, 1], dtype=np.int64)
     partner_rows, _ = find_partner_rows(wv, theta, L_vec)
@@ -318,7 +327,7 @@ def test_build_fij_general_matches_v21_antiparallel_closed_shell_pbc():
     )
     F_gen = build_fij_general(A)
     assert F_gen.shape == (2 * L, 2 * L)
-    # F_gen[i↑, j↓] block (top-right L x L) must match v2.1 F
+    # F_gen[i↑, j↓] block (top-right L x L) must match F
     F_gen_ud = F_gen[:L, L:]
     np.testing.assert_allclose(F_gen_ud, F_v21, atol=1e-12)
     # up-up and down-down blocks must be exactly 0 (no excess)
@@ -425,15 +434,11 @@ def test_build_slater_orbitals_soc_spin_block_permutation():
 
 
 def test_build_pair_list_v3_spin_aware_regression():
-    """v3 A/B fixtures produce byte-for-byte identical pair lists to the
+    """A/B fixtures produce byte-for-byte identical pair lists to the
     frozen goldens; guards against the SOC refactor accidentally routing
-    v3 through the SOC rule (spec §3.5 vs §3.3).
-
-    Codex adversarial review (Rev.1, finding 4): the pair-list inputs
-    are loaded from tracked snapshots under ``tests/data/`` (produced
-    once from ``tests/validation/.../work/hwave/output/*.npz`` and
-    committed), so a clean-checkout CI run without the gitignored
-    ``work/`` directory still exercises the regression.
+    the non-SOC path through the SOC rule. The pair-list inputs are loaded
+    from tracked snapshots under ``tests/data/``, so a clean-checkout CI run
+    without the gitignored ``work/`` directory still exercises the test.
     """
     import json
     from pathlib import Path
@@ -473,7 +478,7 @@ def test_build_pair_list_v3_spin_aware_regression():
 
         observed = [to_jsonable(p) for p in pair_list]
         assert observed == goldens[case], (
-            f"{case}: v3 pair list changed!\n"
+            f"{case}: pair list changed!\n"
             f"Observed:\n{observed}\n"
             f"Golden:\n{goldens[case]}"
         )
@@ -482,7 +487,8 @@ def test_build_pair_list_v3_spin_aware_regression():
 def test_build_pair_list_soc_non_self_canonical_alpha_pairing():
     """Under is_soc_mode=True, non-self canonical block pairs the
     alpha-th occupied column at k with the alpha-th at partner(k)
-    (spec §3.5). Each pair member carries its k_row so
+    as documented in ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
+    Each pair member carries its k_row so
     build_slater_orbitals can read the eigenvector at the correct k.
     """
     stepped = np.array(
@@ -507,7 +513,10 @@ def test_build_pair_list_soc_non_self_canonical_alpha_pairing():
 
 
 def test_build_pair_list_soc_self_pair_odd_rejected():
-    """SOC self canonical block with odd n_occ -> ValueError (spec §3.5)."""
+    """SOC self canonical block with odd n_occ raises ValueError.
+
+    See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
+    """
     stepped = np.array([[1.0, 1.0, 1.0, 0.0]], dtype=np.float64)
     column_spin = np.array([-1, -1, -1, -1], dtype=np.int64)
     canonical = [0]
@@ -521,7 +530,8 @@ def test_build_pair_list_soc_self_pair_odd_rejected():
 
 def test_build_pair_list_soc_non_self_imbalance_rejected():
     """SOC non-self canonical block with n_occ(k) != n_occ(partner)
-    -> ValueError (spec §3.5)."""
+    raises ValueError. See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
+    """
     stepped = np.array(
         [
             [1.0, 1.0, 0.0, 0.0],  # k=0: 2 occupied
@@ -541,8 +551,10 @@ def test_build_pair_list_soc_non_self_imbalance_rejected():
 
 def test_build_pair_list_soc_self_pair_consecutive_columns():
     """SOC self canonical k: consecutive occupied columns get paired
-    (0, 1), (2, 3), ... (spec §3.5). Each pair member carries its
+    (0, 1), (2, 3), ... . Each pair member carries its
     k_row (both == self-pair k here).
+
+    See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     stepped = np.array([[1.0, 1.0, 1.0, 1.0]], dtype=np.float64)
     column_spin = np.array([-1, -1, -1, -1], dtype=np.int64)

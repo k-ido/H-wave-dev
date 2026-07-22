@@ -1,8 +1,7 @@
 """Deterministic Pfaffian-emulating density check for the bridge's F.
 
-Closes the blind spot Codex flagged in the post-Task-11 adversarial
-review: the existing :file:`tests/test_uhfk_to_mvmc_density_check.py`
-validates the amplitudes A_up / A_down ahead of orbitalidx aggregation.
+The existing :file:`tests/test_uhfk_to_mvmc_density_check.py` validates
+the amplitudes A_up / A_down ahead of orbitalidx aggregation.
 mVMC does NOT consume A_up / A_down; it reads ``zqp_orbital_uhfk.dat``,
 multiplies each value by the sign column of ``orbitalidx.def`` to
 reconstruct F_ij, and evaluates a Pfaffian on the resulting matrix.
@@ -375,7 +374,7 @@ def test_bridge_F_reconstructs_correct_density_apbc():
 def test_bridge_F_reconstructs_correct_density_apbc_subshape_2():
     """Same Pfaffian roundtrip test for APBC L=8 with SubShape=[2,1,1]
     (folded lattice has 4 cells x 2 sublattice = 8 physical sites).
-    Ne=4 closed shell as in the v1 APBC case."""
+    Ne=4 gives a closed shell."""
     nsite = 8
     ne_up = 2
     ne_dn = 2

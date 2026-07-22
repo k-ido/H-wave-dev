@@ -1,4 +1,4 @@
-"""Tests for general_output_writer — v3 InOrbitalGeneral writer + aggregator."""
+"""Tests for the InOrbitalGeneral writer and aggregator."""
 from __future__ import annotations
 
 import json
@@ -119,7 +119,7 @@ def test_compare_against_onebodyg_uhf_general_accepts_matching_g():
         # greenone.dat format: i s j t re im
         tmp.write("0 0 1 0  0.25 0.0\n")
         tmp.write("0 1 1 1  0.10 0.0\n")  # spin-down entry: G[0+Ns, 1+Ns]=G[2, 3]=0.10
-        tmp.write("0 0 0 1  0.0 0.0\n")  # spin off-diagonal: expected 0 in v3 scope
+        tmp.write("0 0 0 1  0.0 0.0\n")  # spin off-diagonal: expected 0
         tmp.name
         path = tmp.name
     compare_against_onebodyg_uhf_general(G_all, path, tol=1e-10)
@@ -139,7 +139,7 @@ def _write_golden_bridge_workspace(workspace_dir, golden):
     """Write the minimal namelist.def, modpara.def, orbitalidx_general.def and
     zqp_orbital_uhfk.dat files that ``parse_emitted_F`` consumes.
 
-    Uses the mVMC namelist -> ModPara -> Nsite chain (see spec §5.2). Only
+    Uses the mVMC namelist -> ModPara -> Nsite chain. Only
     the fields exercised by parse_emitted_F are populated; the other
     namelist entries mirror the real bridge output for realism but are not
     read by the parser.
@@ -203,7 +203,7 @@ def test_parse_emitted_F_matches_golden(tmp_path):
     but real bridge workspace, call ``parse_emitted_F`` and assert the
     reconstructed F matches the golden expected F at atol=1e-15.
 
-    Adversarial fixture per spec §5.2: Nsite=3, non-sequential class ids,
+    The adversarial fixture has Nsite=3, non-sequential class ids,
     sign=-1 row on a cross-spin upper-triangle pair, spin-block-
     disambiguating row (i=1, spn_i=0, j=0, spn_j=1) -> all_i=1, all_j=3.
     A parser using site-major ``all = spn + i * 2`` would place the

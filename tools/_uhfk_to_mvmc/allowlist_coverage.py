@@ -1,7 +1,7 @@
-"""§11.5 Phase 1 static allowlist coverage checker.
+"""Static allowlist coverage checker.
 
 Iterates every case_*/input.toml under a fixture root, calls the CLI
-allowlist predicate (§8) on the parsed (theta, sub_shape, cell_shape,
+allowlist predicate on the parsed (theta, sub_shape, cell_shape,
 is_soc_mode) tuple, and enforces:
 
   * Every case_*/input.toml is parsed via
@@ -10,13 +10,13 @@ is_soc_mode) tuple, and enforces:
     (tools/uhfk_to_mvmc.py) uses to source is_soc_mode. A fixture
     that is malformed (no [mode]/[mode.param], TOML parse error, or
     missing CellShape / BoundaryCondition) fails the whole check
-    loudly (AllowlistCoverageError) per §11.5; it is never silently
+    loudly (AllowlistCoverageError); it is never silently
     skipped.
 
   * Every discovered fixture must be accepted by the CLI predicate
     (tools._uhfk_to_mvmc.allowlist_predicate.is_supported_triple) --
     the exact function the CLI itself calls, so the checker and the
-    CLI cannot drift (Codex Rev.2 finding 1, Rev.3 fix).
+    CLI cannot drift.
 
   * If require_all_expected=True, every key in the passed expected_map
     must correspond to exactly one discovered fixture (missing -> fail),
@@ -24,7 +24,7 @@ is_soc_mode) tuple, and enforces:
 
   * No duplicate fixtures on the same *allowed* (gated) triple. A
     triple is "gated" when is_supported_triple can only accept it by
-    matching the curated v3.6/v3.7 frozensets in
+    matching the curated frozensets in
     allowlist_predicate.py -- i.e. none of that function's trivial
     early-return branches (non-SOC, SubShape=[1,1,1], or SOC+PBC)
     apply. Only gated triples participate in duplicate-inventory
@@ -48,8 +48,7 @@ is_soc_mode) tuple, and enforces:
           triple and the basename do NOT qualify here and must instead
           satisfy (b) or fail closed, or
       (b) every fixture sharing that triple is a key in expected_map
-          (explicit inventory declaration, e.g. once Phase 2a
-          populates _V36_EXPECTED_FIXTURE_MAP /
+          (explicit inventory declaration via _V36_EXPECTED_FIXTURE_MAP /
           _V37_EXPECTED_FIXTURE_MAP).
     Otherwise it fails closed as a duplicate.
 
@@ -58,7 +57,6 @@ relative resolved paths are used as inventory keys so mirror fixtures
 under different roots do not collide by basename, and symlink-escape /
 case-mismatched aliases are rejected.
 
-Codex Rev.2 findings 1 & 3 + Rev.3 finding 3.
 """
 from __future__ import annotations
 
@@ -85,18 +83,12 @@ def _load_fixture_triple(input_toml_path):
     input_loader.load_input_toml, the exact shallow [mode] +
     [mode.param] merge the production CLI (tools/uhfk_to_mvmc.py) uses
     ([mode.param] wins on key collision; see that loader's docstring).
-    An earlier revision of this function read `enable_spin_orbital`
-    from the top-level [mode] table only, so a fixture that declares
-    it under [mode.param] instead (the pre-v3.1 dispatch-test layout
-    load_input_toml explicitly supports) would read as non-SOC here
-    while the real CLI treats it as SOC -- a silent false pass on the
-    shape-allowlist gate this module exists to enforce.
 
     Raises AllowlistCoverageError if input.toml cannot be loaded (no
     [mode]/[mode.param] section, TOML parse error) or is missing
     CellShape / BoundaryCondition. A malformed fixture is a real
     problem the coverage checker must surface loudly -- fail the
-    whole check (§11.5), never silently skip the fixture or leak an
+    whole check, never silently skip the fixture or leak an
     uncontextualized KeyError/ValueError past this function.
     """
     try:
@@ -129,7 +121,7 @@ def _relpath_anchor(root):
     keys: the nearest ancestor of the already-resolved `root` that
     contains both tests/ and tools/ directories (the repo root), so
     real usage against tests/validation/ produces keys matching the
-    §11.5 design doc's repo-relative expected_map format (e.g.
+    repo-relative expected_map format (e.g.
     "tests/validation/uhfk_mvmc_pairproduct/case_...").
 
     Falls back to `root` itself when no such ancestor exists -- this
@@ -147,7 +139,7 @@ def _relpath_anchor(root):
 
 def _is_gated_triple(apbc_mask, sub_shape, is_soc_mode):
     """True iff (is_soc_mode, sub_shape, apbc_mask) can only be
-    accepted by is_supported_triple via the curated v3.6/v3.7
+    accepted by is_supported_triple via the curated
     allowlist frozensets -- i.e. none of that function's trivial
     early-return branches apply.
 
@@ -169,8 +161,8 @@ def _is_gated_triple(apbc_mask, sub_shape, is_soc_mode):
 def check_fixture_allowlist_coverage(
     fixture_root, expected_map, require_all_expected=True,
 ):
-    """Iterate case_*/input.toml under fixture_root and enforce §11.5
-    coverage contract.
+    """Iterate case_*/input.toml under fixture_root and enforce the
+    declared allowlist inventory, duplicate, and fail-loud checks.
 
     Parameters
     ----------
@@ -248,7 +240,7 @@ def check_fixture_allowlist_coverage(
         except AllowlistCoverageError:
             # _load_fixture_triple already raises AllowlistCoverageError
             # with file context on any malformed fixture; re-raise as-is
-            # (fail loud per §11.5, never skip) rather than let a bare
+            # (fail loud, never skip) rather than let a bare
             # KeyError/ValueError from a future change escape uncaught.
             raise
 
@@ -256,7 +248,8 @@ def check_fixture_allowlist_coverage(
             theta, sub_shape, cell_shape, is_soc_mode
         ):
             raise AllowlistCoverageError(
-                f"{relpath}: not in the v3.7 allowlist. {REJECT_MESSAGE}"
+                f"{relpath}: not in the supported allowlist. "
+                f"{REJECT_MESSAGE}"
             )
 
         triple = (apbc_mask, sub_shape, cell_shape)

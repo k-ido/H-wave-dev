@@ -1,6 +1,6 @@
 """zqp_orbital_uhfk.dat writer and Fij → orbital param aggregation.
 
-Spec section 4.3. The output text format matches mVMC's
+The output text format matches mVMC's
 Child_OutputOptData (mVMC-1.4.0/src/ComplexUHF/output.c:43-52) which
 mVMC reads via fscanf("%d %lf %lf") for the InOrbital /
 InOrbitalAntiParallel key (readdef.c:1714-1726). Aggregation follows
@@ -16,7 +16,8 @@ bridge's default amplitude ``1e-8`` (see ``aggregate_orbital_params``
 default and CLI ``--epsilon-noise`` help) sits in the stable plateau
 ``epsilon_noise <= 1e-7`` where the case_apbc Ne=4 (rank-2) E2E
 reproduces UHF energy within ~1 VMC stderr at NVMCSample=10000
-without significantly perturbing the physics.
+without significantly perturbing the physics. See
+docs/en/source/uhfk/tools/uhfk_to_mvmc.rst.
 """
 from __future__ import annotations
 
@@ -103,7 +104,7 @@ def write_zqp_orbital(out_path, params):
 
     Header (5 lines) matches the mVMC `ReadInputParameters` reader
     (readdef.c:1467-1477), which reads `NOrbitalIdx <N>` from LINE 2 via
-    `sscanf(line2, "%s %d", ctmp, &idx)`. Spec section 4.3.
+    `sscanf(line2, "%s %d", ctmp, &idx)`.
 
         ======================
         NOrbitalIdx <N>

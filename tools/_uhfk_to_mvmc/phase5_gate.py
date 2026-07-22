@@ -1,31 +1,12 @@
-"""§11.6 Phase 5 orchestrator + live UHF smoke launcher.
+"""Static-gate orchestrator and live UHF smoke launcher.
 
-Closes §14.1 residual-risk findings 1-3 from Codex Rev.5 review:
-  * F.1 (partial): atomic trans.def substitution via temp-file +
-    fsync + os.replace, with cleanup on failure. Full O_NOFOLLOW /
-    fd-inheritance TOCTOU fix vs UHF exec is a follow-up
-    implementation task.
-  * F.2: `require_marker` parameter removed; marker check is
-    unconditional and cannot be disabled.
-  * F.3: marker is a canonical JSON digest binding trans.def.sha256,
-    initial.def.provenance.sha256, workspace SCF fingerprint hashes,
-    expected phase mask, namelist.def, and every resolved namelist target.
-
-Task 1e review follow-up (post-Rev.5) additionally closes:
-  * trans.def / initial.def.provenance missing at static-check time
-    is now a Phase5StaticFailure instead of a silently-recorded empty
-    SHA256 that the live smoke re-check would then skip.
-  * Live smoke re-verifies hwave_green_sha256, hwave_eigen_sha256,
-    and hwave_energy_total (previously recorded in the marker but
-    never re-checked), and rejects a corrupt/truncated marker with
-    Phase5LiveSmokeGuardError instead of a raw JSONDecodeError.
-  * Marker write uses the same tmp-file + fsync + os.replace atomic
-    helper as trans.def substitution.
-  * Live smoke raises Phase5LiveSmokeGuardError if the UHF subprocess
-    exits with a non-zero returncode, instead of returning silently.
-  * The exact bundle selected by namelist.def is resolved inside the
-    workspace, validated and hashed, then re-resolved and re-hashed
-    immediately before UHF launch.
+``trans.def`` substitution and marker writes use a temporary file, fsync,
+and ``os.replace``, with temporary-file cleanup on failure. The mandatory
+canonical-JSON marker binds the ``trans.def`` and seed-provenance hashes,
+workspace SCF fingerprints, expected phase mask, ``namelist.def``, and every
+resolved namelist target. The live smoke re-resolves and re-hashes the exact
+bundle, rejects a missing or corrupt marker, and launches UHF only after the
+static checks succeed. A non-zero UHF exit status is an error.
 """
 from __future__ import annotations
 
@@ -127,9 +108,6 @@ def atomic_substitute_trans_def(src: bytes, dst: Path) -> None:
     """Atomically substitute dst with src bytes via tmp-file +
     fsync + os.replace. On failure, dst is unchanged and tmp is
     cleaned up.
-
-    Codex Rev.5 F.1 (partial): closes race between substitute and
-    static validator. Full TOCTOU vs UHF exec is a follow-up.
     """
     _atomic_write_bytes(Path(dst), src)
 
@@ -715,7 +693,7 @@ def run_static_bundle_validator(
     expected_phase_mask: tuple,
     _skip_bundle_files_for_test: bool = False,
 ) -> Path:
-    """Run all §6.1 static checks + write canonical-JSON marker.
+    """Run all static checks and write a canonical-JSON marker.
 
     Returns Path to the marker; raises Phase5StaticFailure on any
     check failure (no marker written on failure).
@@ -774,7 +752,7 @@ def run_live_uhf_smoke(
     marker-referenced hash from the CURRENT workspace and refuses
     to invoke UHF if anything mismatches.
 
-    Codex Rev.5 F.2 + F.3 closure: no `require_marker` opt-out.
+    There is no `require_marker` opt-out.
     """
     workspace = Path(workspace)
     marker_path = workspace / "phase5_static_ok.marker"
@@ -925,7 +903,7 @@ def run_phase5_gate(
     expected_phase_mask: tuple,
     uhf_binary: str,
 ) -> "subprocess.CompletedProcess":
-    """§11.6 sole entry point for Phase 5 gates.
+    """Sole entry point for the static and live gates.
 
     Enforces static-first ordering BY CONSTRUCTION: this function is
     the only sanctioned way to run both tiers, and it always runs

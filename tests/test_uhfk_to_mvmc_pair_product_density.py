@@ -1,8 +1,7 @@
-"""Tests for tools/_uhfk_to_mvmc/pair_product_density.py — v3.6 Phase 1a.
+"""Tests for tools/_uhfk_to_mvmc/pair_product_density.py.
 
-Pins the five §5.4 mandatory tests plus the parse_emitted_F sanity smoke
-test. `test_pair_product_density_from_F_matches_v1_case_pbc` is skipped
-until Phase 3 regenerates the v1 snapshot with the required inputs.
+Includes a parse_emitted_F sanity smoke test. The case_pbc comparison is
+skipped until its required snapshot inputs are available.
 """
 from __future__ import annotations
 
@@ -63,11 +62,12 @@ def _random_unitary(n, seed):
 
 
 def _synthetic_projector_F(seed=20260709):
-    """Build F = Q @ Sigma @ Q.T per spec §5.4 test 2.
+    """Build F = Q @ Sigma @ Q.T for the projector test.
 
     Sigma = block_diag(0.5 * [[0,1],[-1,0]],  1.0 * [[0,1],[-1,0]],  0 * ...)
     so singular values sorted are [1, 1, 0.5, 0.5, 0, 0] and the top-4
-    left-singular subspace equals span(Q[:, :4]).
+    left-singular subspace equals span(Q[:, :4]). See
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     Q = _random_unitary(6, seed=seed)
     block_anti = np.array([[0.0, 1.0], [-1.0, 0.0]], dtype=np.complex128)
@@ -120,14 +120,12 @@ def test_pair_product_density_from_F_hermitian_check():
     )
 
 
-@pytest.mark.skip(reason="Phase 3 will regenerate v1 snapshot")
+@pytest.mark.skip(reason="The required case_pbc snapshot is not available")
 def test_pair_product_density_from_F_matches_v1_case_pbc():
-    """v1 case_pbc snapshot with default --epsilon-noise 1e-8; helper output
+    """case_pbc snapshot with default --epsilon-noise 1e-8; helper output
     matches the density-check reference at 5e-7 with rank_tol=1e-6.
 
-    Deferred to Phase 3: needs a regenerated v1 fixture (F_from_emitted +
-    reference G) that this test can load. Body kept intact so activation is
-    only a matter of populating the fixture.
+    Requires a regenerated fixture containing F_from_emitted and reference G.
     """
     from tools._uhfk_to_mvmc.pair_product_density import parse_emitted_F
     workspace = os.path.join(
@@ -135,14 +133,14 @@ def test_pair_product_density_from_F_matches_v1_case_pbc():
     )
     F_from_emitted = parse_emitted_F(workspace)
     # N_pairs derived from the fixture header when the snapshot is materialized.
-    N_pairs = None  # placeholder; Phase 3 will pin
+    N_pairs = None  # Set from the fixture header when the snapshot is available.
     G_ship = pair_product_density_from_F(
         F_from_emitted, N_pairs=N_pairs, rank_tol=1e-6
     )
     G_ref_path = os.path.join(workspace, "G_ref.npz")
     G_ref = np.load(G_ref_path)["G"]
     delta = float(np.max(np.abs(G_ship - G_ref)))
-    assert delta < 5e-7, f"v1 case_pbc snapshot mismatch: delta = {delta}"
+    assert delta < 5e-7, f"case_pbc snapshot mismatch: delta = {delta}"
 
 
 def _synthetic_soc_A(nsite=4, seed=20260710):
@@ -215,7 +213,7 @@ def test_pair_product_density_from_F_rejects_wrong_orientation_soc():
 
 
 def test_pair_product_density_from_F_matches_v3_5_case_soc_sub_zeronoise():
-    """Phase 3d pin (spec §5.4 zero-noise rank_tol). On the v3.5 shipping
+    """On the shipping
     fixture case_soc_rashba_2d_sub run through the bridge with
     ``--epsilon-noise 0`` (rank-lift disabled), the projector helper on
     the emitted F must reproduce ``conj(A_ship) @ A_ship.T`` at 1e-10
@@ -229,6 +227,7 @@ def test_pair_product_density_from_F_matches_v3_5_case_soc_sub_zeronoise():
     build_fij_general -> parse_emitted_F -> pair_product_density_from_F
     that scrambles the projector orientation, drops a sign, or
     mis-computes the antisymmetrization will trip this at machine-scale.
+    See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     from pathlib import Path
     from tools._uhfk_to_mvmc.general_fij_builder import (
@@ -290,15 +289,14 @@ def test_pair_product_density_from_F_matches_v3_5_case_soc_sub_zeronoise():
     max_diff = float(np.max(np.abs(G_from_F - G_direct)))
     assert max_diff < 1e-10, (
         f"|G_from_F - G_direct|_max = {max_diff:.3e} > 1e-10 on the "
-        "v3.5 case_soc_rashba_2d_sub zero-noise snapshot; the skew-SVD "
+        "case_soc_rashba_2d_sub zero-noise snapshot; the skew-SVD "
         "projector on emitted F no longer matches the shipping-A "
         "density under SOC + SubShape > [1, 1, 1]."
     )
 
 
 # ---------------------------------------------------------------------
-# Phase 3d (v3.7): zero-noise F pin parametrized over the 4 v3.7
-# multi-direction APBC fixtures (spec §5.4 + §11.1).
+# Zero-noise F pin over the four multi-direction APBC fixtures.
 # ---------------------------------------------------------------------
 
 
@@ -311,19 +309,20 @@ def test_pair_product_density_from_F_matches_v3_5_case_soc_sub_zeronoise():
 def test_pair_product_density_from_F_matches_v37_case_soc_sub_zeronoise(
     fixture_name, expected_theta, expected_ncond,
 ):
-    """Phase 3d (v3.7 spec §5.4 + §11.1) parametrized over the 4 v3.7
-    shipping fixtures under CellShape=[4,4,4]/SubShape=[2,2,2]. For each
+    """Parametrized over the four shipping fixtures under
+    CellShape=[4,4,4]/SubShape=[2,2,2]. For each
     fixture, on the zero-noise (``--epsilon-noise 0``) emitted F, the
     projector helper must reproduce ``conj(A_ship) @ A_ship.T`` at 1e-10
     max_abs_delta with ``rank_tol = 1e-10``.
 
-    The v3.5 test above pins the single-direction PBC case on
-    case_soc_rashba_2d_sub. This v3.7 test extends the pin to
+    The test above pins the single-direction PBC case on
+    case_soc_rashba_2d_sub. This test covers
     multi-direction APBC: xy (AP-AP-P), xz (AP-P-AP), yz (P-AP-AP), xyz
     (AP-AP-AP). Any regression in build_fij_general -> parse_emitted_F ->
     pair_product_density_from_F that scrambles the projector
     orientation, drops a sign, or mis-computes the antisymmetrization
-    under multi-direction APBC will trip this at machine-scale.
+    under multi-direction APBC will trip this at machine-scale. See
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     from tools._uhfk_to_mvmc.general_fij_builder import (
         build_slater_orbitals, build_pair_list, compute_canonical_reps,
@@ -383,7 +382,7 @@ def test_pair_product_density_from_F_matches_v37_case_soc_sub_zeronoise(
     print(f"[{fixture_name}] max_abs_delta={max_diff:.3e}")
     assert max_diff < 1e-10, (
         f"[{fixture_name}] |G_from_F - G_direct|_max = {max_diff:.3e} > "
-        "1e-10 on the v3.7 zero-noise snapshot; the skew-SVD projector "
+        "1e-10 on the zero-noise snapshot; the skew-SVD projector "
         "on emitted F no longer matches the shipping-A density under "
         "multi-direction APBC."
     )

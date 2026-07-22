@@ -1,15 +1,13 @@
-"""Parser for mVMC orbitalidx_general.def (v3 General 6-column format).
+"""Parser for mVMC orbitalidx_general.def (General 6-column format).
 
 mVMC readdef.c GetInfoOrbitalGeneral (readdef.c:2949+) reads
 
     <i> <spn_i> <j> <spn_j> <fij_class_idx> <fijSign>
 
 per mapping row, followed by NOrbitalIdx optimize-flag lines. The
-6-column arity distinguishes InOrbitalGeneral from the v2.1
+6-column arity distinguishes InOrbitalGeneral from the
 InOrbitalAntiParallel 3/4-column format handled by
 ``orbitalidx_reader.parse_orbitalidx_def``.
-
-Spec: docs/superpowers/specs/2026-07-01-uhfk-mvmc-pairproduct-general-v3-design.md §4.2
 """
 from __future__ import annotations
 
@@ -38,10 +36,10 @@ def detect_orbitalidx_format(path: str) -> str:
     Returns
     -------
     "antiparallel"
-        First mapping line has 3 (PBC v2.1) or 4 (APBC v2.1) whitespace-
+        First mapping line has 3 (PBC) or 4 (APBC) whitespace-
         separated integers.
     "general"
-        First mapping line has 6 integers (v3 InOrbitalGeneral).
+        First mapping line has 6 integers (InOrbitalGeneral).
 
     Raises
     ------
@@ -73,7 +71,7 @@ def detect_orbitalidx_format(path: str) -> str:
             return "general"
         raise OrbitalidxFormatError(
             f"unexpected mapping-line arity {arity} in {path}; expected "
-            f"3 or 4 (v2.1 AntiParallel) or 6 (v3 General). "
+            f"3 or 4 (AntiParallel) or 6 (General). "
             f"Sample line: {stripped!r}"
         )
     raise OrbitalidxFormatError(
@@ -88,7 +86,7 @@ def parse_orbitalidx_general_def(path: str) -> dict:
     -------
     dict with keys:
         n_orbital_idx : int — total unique parameter count from header.
-        complex_type : int — must be 1 for v3 (F is complex).
+        complex_type : int — must be 1 because F is complex.
         mapping : dict[(all_i, all_j)] = (idx, sign)
             all_i = i + spn_i * Nsite, all_j = j + spn_j * Nsite,
             all_i < all_j required (upper triangle).

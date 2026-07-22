@@ -1,18 +1,14 @@
-"""Phase 5 smoke tests for the apbc_complexuhf SOC fixture and parser.
+"""Smoke tests for the apbc_complexuhf SOC fixture and parser.
 
-Phase 5 is HARNESS-ONLY per plan Task 5c: no live ComplexUHF SCF is
-launched here. These tests confirm:
+These tests confirm:
 
-1. The v3.6 SOC fixture at
+1. The SOC fixture at
    `tests/validation/apbc_complexuhf/case_soc_rashba_2d_sub_apbc/` has
    the eight files the run.sh case switch will consume.
 2. `compare.py::_read_greenone` still parses the 4-index `(i, s, j, t)`
    SOC layout end-to-end on a real H-wave greenone.dat snapshot from
-   the shipping v3.6 fixture, including non-zero cross-spin `s != t`
-   entries which the Phase 6 G2a/G2b gates rely on.
-3. The Phase 3 committed snapshots exist and can be loaded (proves the
-   Phase 5 harness can consume them if Phase 6 needs to compare against
-   frozen truth).
+   the shipping fixture, including non-zero cross-spin `s != t` entries.
+3. The committed snapshots exist and can be loaded by the harness.
 """
 from __future__ import annotations
 
@@ -54,10 +50,11 @@ def _parser_workspace(tmp_path_factory):
 
 
 def test_apbc_complexuhf_soc_fixture_has_required_files():
-    """Phase 5a: the fixture skeleton committed by this branch has the
-    eight files run.sh case_soc_rashba_2d_sub_apbc (Phase 6) will read.
-    Rate: files exist; do not assert on their contents (regeneration
-    against StdFace is Phase 6's job)."""
+    """The fixture has the files run.sh reads for this case.
+
+    This test checks existence only; the separate Hamiltonian comparison
+    checks the mirrored file contents.
+    """
     required = [
         "Geometry.dat", "Transfer.dat", "CoulombIntra.dat",
         "OneBodyG.dat", "geometry_uhf.dat", "input.toml",
@@ -66,7 +63,7 @@ def test_apbc_complexuhf_soc_fixture_has_required_files():
     for name in required:
         p = _APBC_CU_CASE / name
         assert p.is_file(), (
-            f"Phase 5a fixture missing {name} under {_APBC_CU_CASE}"
+            f"Required APBC fixture file {name} is missing under {_APBC_CU_CASE}"
         )
 
 
@@ -74,7 +71,7 @@ def test_apbc_complexuhf_soc_fixture_matches_hwave_hamiltonian():
     """The Hamiltonian input files (Geometry, Transfer, CoulombIntra,
     OneBodyG, geometry_uhf, input.toml) MUST be bit-identical between
     the apbc_complexuhf fixture and the H-wave shipping fixture so the
-    Phase 6 cross-check compares equal SCF solvers rather than different
+    cross-check compares equal SCF solvers rather than different
     discretizations. StdFace vs H-wave already disagree by finite VMC
     stderr; on top of that, feeding differently-quantized Hamiltonians
     would make the G2a/G2b diagnosis useless."""
@@ -97,7 +94,7 @@ def test_apbc_complexuhf_soc_stan_in_declares_phase0_180():
     phase0 = 180.0 in stan.in (StdFace bakes the -1 wrap sign into
     Trans.def). If the fixture is copied from the non-APBC template
     and phase0 is missing / not 180.0, ComplexUHF silently produces a
-    PBC ground truth and the Phase 6 G2a/G2b gates would compare
+    PBC ground truth and the G2a/G2b gates would compare
     APBC-H-wave against PBC-ComplexUHF -> false positives on every
     cross-spin entry.
     """
@@ -134,10 +131,10 @@ def _load_apbc_compare_module():
 
 
 def test_read_greenone_parses_soc_cross_spin_rows_on_hwave_snapshot():
-    """Phase 5b: the parser must round-trip the 4-index (i, s, j, t)
+    """The parser must round-trip the 4-index (i, s, j, t)
     SOC layout on a real H-wave greenone.dat under APBC + SubShape.
 
-    Uses a tracked excerpt of the Phase 2 SCF greenone.dat.
+    Uses a tracked excerpt of the SCF greenone.dat.
     Asserts:
       - parser returns > 0 rows
       - at least one non-zero cross-spin (s != t) row exists (this is
@@ -162,16 +159,15 @@ def test_read_greenone_parses_soc_cross_spin_rows_on_hwave_snapshot():
     assert cross_spin_nonzero, (
         "no non-zero cross-spin (s != t) rows parsed from greenone; "
         "either the fixture lost its Rashba SOC or the parser silently "
-        "dropped 4-index SOC rows. Either way, the Phase 6 G2a-in-"
-        "memory-A / G2b cross-check would produce a trivial pass."
+        "dropped 4-index SOC rows."
     )
     # Sanity on dtype.
     _ = np.complex128(next(iter(parsed.values())))
 
 
 def test_phase3_snapshots_loadable_from_apbc_harness_side():
-    """Phase 5c: the persisted Phase 3 snapshots that Phase 6 G2a-in-
-    memory-A / G2b will consume (via the H-wave uhfk_mvmc_pairproduct
+    """The persisted snapshots that G2a-in-memory-A / G2b consume
+    (via the H-wave uhfk_mvmc_pairproduct
     harness on the shipping side, mirrored on the apbc_complexuhf side)
     load without error. This is a low-cost harness smoke test."""
     for name in (
@@ -180,7 +176,7 @@ def test_phase3_snapshots_loadable_from_apbc_harness_side():
         "v36_case_soc_rashba_2d_sub_apbc_occupation.npz",
     ):
         p = _DATA_DIR / name
-        assert p.is_file(), f"Phase 3 snapshot missing: {p}"
+        assert p.is_file(), f"Required tracked snapshot is missing: {p}"
         with np.load(str(p)) as npz:
             files = list(npz.files)
-            assert files, f"Phase 3 snapshot {name} is empty"
+            assert files, f"Tracked snapshot {name} is empty"

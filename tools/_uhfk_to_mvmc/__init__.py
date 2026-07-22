@@ -1,3 +1,5 @@
-"""H-wave UHFk → mVMC PairProduct bridge internals (spec
-docs/superpowers/specs/2026-06-30-uhfk-mvmc-pairproduct-bridge-design.md).
+"""H-wave UHFk → mVMC PairProduct bridge internals.
+
+See docs/en/source/algorithm/uhfk_to_mvmc.rst for the construction and
+docs/en/source/uhfk/tools/uhfk_to_mvmc.rst for usage.
 """

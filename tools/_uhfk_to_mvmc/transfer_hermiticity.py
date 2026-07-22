@@ -1,9 +1,9 @@
-"""§11.4 checker: assert Transfer.dat rows satisfy
+"""Assert Transfer.dat rows satisfy
 H[s,t](R) = conj(H[t,s](-R)) for every nontrivial pair.
 
-Called from run.sh at --all-v37 startup and on the single-case path,
-and from Phase 2 producer start, to guard against a non-Hermitian
-regression in fixture Transfer.dat.
+Called from run.sh startup and on the single-case path, and from the
+manifest producer, to guard against a non-Hermitian fixture Transfer.dat.
+See docs/en/source/algorithm/uhfk_to_mvmc.rst for the Transfer mapping.
 """
 from __future__ import annotations
 

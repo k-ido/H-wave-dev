@@ -1,4 +1,4 @@
-"""Fail-fast tests for the bridge CLI (spec section 3.7)."""
+"""Fail-fast tests for the bridge CLI."""
 from __future__ import annotations
 
 import sys, os, subprocess, tempfile
@@ -70,7 +70,7 @@ def _write_minimal_inputs(tmp, subshape=(1, 1, 1)):
 
 def test_subshape_not_dividing_cellshape_fails_fast():
     """SubShape[d] must divide CellShape[d]. E.g. SubShape=[3,1,1] on
-    CellShape=[4,1,1] must be rejected (v2 fail-fast)."""
+    CellShape=[4,1,1] must be rejected fail-fast."""
     with tempfile.TemporaryDirectory() as tmp:
         paths = _write_minimal_inputs(tmp, subshape=(3, 1, 1))
         result = subprocess.run(
@@ -120,7 +120,7 @@ def test_apbc_without_sign_column_fails_fast():
     """APBC + orbitalidx.def lacking 4-column sign → reject.
 
     The eigen.npz twist_offset is updated in lockstep with the input.toml
-    BoundaryCondition so the v3.1 eigen twist consistency check (Task 2)
+    BoundaryCondition so the eigen twist consistency check
     does not preempt the sign-column reject this test is targeting.
     """
     with tempfile.TemporaryDirectory() as tmp:
@@ -156,7 +156,7 @@ def test_apbc_without_sign_column_fails_fast():
 
 
 def test_multi_orbital_geometry_fails_fast():
-    """Geometry with norb > 1 must be rejected (v1 spec section 7)."""
+    """Geometry with norb > 1 must be rejected."""
     with tempfile.TemporaryDirectory() as tmp:
         paths = _write_minimal_inputs(tmp, subshape=(1, 1, 1))
         # Overwrite geometry with 2 orbitals per cell (2 lines per R)
@@ -203,10 +203,11 @@ def test_sz_free_column_spin_fails_fast():
 
 
 def test_cli_failure_leaves_no_output_artifact():
-    """Codex adversarial review fix 2: if validation fails the CLI must
-    not leave a mVMC-readable ``zqp_orbital_uhfk.dat`` behind. Use the
-    Sz-free fail-fast path (cheap to trigger) and check the output path
-    is absent after the run."""
+    """A validation failure must not leave a readable output artifact.
+
+    Use the inexpensive Sz-free fail-fast path and verify that
+    ``zqp_orbital_uhfk.dat`` remains absent.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         paths = _write_minimal_inputs(tmp, subshape=(1, 1, 1))
         np.savez(
@@ -233,7 +234,7 @@ def test_cli_failure_leaves_no_output_artifact():
         assert result.returncode != 0
         assert not os.path.exists(paths["output"]), (
             "CLI left a zqp_orbital_uhfk.dat artifact even though "
-            "validation rejected the inputs; see Codex finding 2 "
+            "validation rejected the inputs "
             f"(stderr: {result.stderr!r})"
         )
 

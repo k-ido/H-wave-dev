@@ -1,7 +1,6 @@
-"""Phase 2g mandatory negative tests for the semantic G4 topology guard.
+"""Mandatory negative tests for the semantic G4 topology guard.
 
-Spec §4.3 (composite condition) + plan Task 2g (six mandatory negative
-tests). Each test constructs a small stub manifest / workspace and
+Each test constructs a small stub manifest / workspace and
 asserts the guard rejects with exit code 2 + empty stdout on the
 targeted invariant violation.
 """
@@ -35,10 +34,10 @@ _CASE_ROOT = (
 )
 _REAL_CASE_SOURCE = _CASE_ROOT / "case_soc_rashba_2d_sub_apbc"
 _REAL_CASE_DIR = str(_REAL_CASE_SOURCE)
-# v3.7 fixture whose active APBC axes are (y, z) -- NO x. Used to
+# Fixture whose active APBC axes are (y, z) -- NO x. Used to
 # regression-test that the sub_offset-differs check gates on the
-# fixture's actual active axes rather than a hardcoded x (see the 3b
-# regression test below).
+# fixture's actual active axes rather than a hardcoded x. See
+# ``docs/en/source/algorithm/uhfk_to_mvmc.rst`` for gauge composition.
 _REAL_CASE_SOURCE_YZ = _CASE_ROOT / "case_soc_rashba_3d_sub_apbc_yz"
 _REAL_CASE_DIR_YZ = str(_REAL_CASE_SOURCE_YZ)
 _REAL_CASE_SOURCE_XY = _CASE_ROOT / "case_soc_rashba_3d_sub_apbc_xy"
@@ -209,12 +208,9 @@ def test_g4_rejects_no_sub_offset_diff(tmp_path):
 # 3b. Regression: the sub_offset-differs check must gate on the
 # fixture's ACTUAL active APBC axis, not a hardcoded x. A manifest
 # whose only active axis is y (theta = (0, pi, 0)) with sub_offset
-# differing in x but NOT in y must still be rejected -- prior to the
-# v3.7 Task 2d fix (case_soc_rashba_3d_sub_apbc_yz), this check was
-# hardcoded to axis 0 (x) and would have wrongly PASSED this manifest
-# because so_i_x != so_j_x, even though the truly-active y axis has
-# so_i_y == so_j_y (the real APBC-direction condition from v3.6 spec
-# §4.3 / v3.7 spec §4 is unexercised).
+# differing in x but NOT in y must still be rejected. This pins the
+# requirement against a hardcoded axis-0 check. See
+# ``docs/en/source/algorithm/uhfk_to_mvmc.rst`` for gauge composition.
 # ---------------------------------------------------------------------
 
 
@@ -378,14 +374,16 @@ def test_g4_passes_on_real_case_soc_rashba_2d_sub_apbc(tmp_path):
 
 
 def test_g4_passes_on_real_case_soc_rashba_3d_sub_apbc_yz(tmp_path):
-    """Sanity + 3b regression: the guard MUST PASS on the committed
-    yz fixture (v3.7 Task 2d), whose active APBC axes are (y, z) with
+    """The guard MUST PASS on the committed yz fixture, whose active
+    APBC axes are (y, z) with
     NO x. This is the concrete case that exposed the hardcoded-x
     sub_offset bug: the composite this fixture's own producer selects
     has sub_offset differing in y and z but NOT in x (x is not an
-    APBC direction here, so the v3.7 §4 addendum places no requirement
+    APBC direction here, so the active-axis condition places no requirement
     on it), which a hardcoded ``sub_offset_x`` check rejects even
-    though the fixture is fully spec-compliant."""
+    though the fixture is valid. See
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
+    """
     manifest_path = os.path.join(_REAL_CASE_DIR_YZ, "composite_element.json")
     res = _run_cli(_REAL_CASE_DIR_YZ, manifest_path)
     assert res.returncode == 0, res.stderr

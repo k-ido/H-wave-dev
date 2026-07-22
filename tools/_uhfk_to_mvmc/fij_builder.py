@@ -1,6 +1,7 @@
 """(k, -k) time-reversal pair Fij builder.
 
-Spec sections 3.2 / 3.3 (v2.1 revision) / 3.4 / 5.1.
+See docs/en/source/algorithm/uhfk_to_mvmc.rst for the Bloch convention,
+sublattice unfolding, and canonical-pair construction.
 
 Physical-basis amplitude convention (positive-Bloch, matches H-wave's
 folded-eigenvector convention: negative-gauge APBC transform
@@ -29,13 +30,6 @@ A_up[i, alpha] A_down[j, alpha] reproduces H-wave's ``greenone.dat``
 element-wise, both spins, for arbitrary SubShape (verified to 1e-14
 for the SubShape=[2,1,1] APBC L=8 fixture).
 
-Historical note: the v2 initial draft used negative-Bloch signs on
-both exponents. That formulation was numerically indistinguishable
-from positive-Bloch for SubShape=[1,1,1] because the summed (k, -k)
-pair symmetrises the plane wave, so v1 physical UHF SCF outputs match
-either convention. For SubShape > 1 the folded eigenvector carries a
-non-trivial sub_offset envelope and only the positive-Bloch form
-above reproduces H-wave's ``_deflate_green`` storage.
 """
 from __future__ import annotations
 
@@ -70,27 +64,29 @@ def build_amplitudes(
     (k, -k) partner lookup; for self-pair k the partner equals the up's
     own row.
 
-    Sublattice support (v2 spec §3.3)
-    --------------------------------
+    Sublattice support
+    ------------------
     When ``cell_shape`` and ``subshape`` are supplied and ``SubShape >
     [1, 1, 1]``, H-wave's eigenvectors live on the folded BZ of size
     ``nvol_folded = prod(cell_shape // subshape)``. Each physical site
     maps to a ``(folded_cell, sub_offset)`` pair via
     ``sublattice_unfold.decode_physical_site``, and the up / down row
     within the folded ``nd = 2 * norb_folded`` block depends on the
-    folded orbital (Codex finding 1). Passing ``cell_shape=None``
-    reproduces v1 behaviour with ``SubShape = [1, 1, 1]``.
+    folded orbital. Passing ``cell_shape=None`` selects
+    ``SubShape = [1, 1, 1]``.
 
     Raises
     ------
     ValueError
         If the partner-mapped (k, -k) occupation set is not consistent
-        with the actual occupied down set (Codex finding 3: in magnetic
+        with the actual occupied down set (in magnetic
         UHF or spin-dependent fillings, the up-and-down occupied sets
         need not coincide through the time-reversal partner map).
     ValueError
         If ``subshape`` does not divide ``cell_shape`` in every direction
-        (v2 fail-fast).
+        before amplitude construction.
+
+    See docs/en/source/algorithm/uhfk_to_mvmc.rst.
     """
     wavevector_index = np.asarray(wavevector_index, dtype=np.int64)
     eigenvector = np.asarray(eigenvector, dtype=np.complex128)
@@ -102,7 +98,7 @@ def build_amplitudes(
     L = np.asarray(L, dtype=np.int64)
 
     if cell_shape is None:
-        # v1 fallback: SubShape=[1,1,1], L is already CellShape
+        # Single-orbital fallback: SubShape=[1,1,1], L is already CellShape.
         cell_shape = np.asarray(L, dtype=np.int64)
         subshape = np.array([1, 1, 1], dtype=np.int64)
     else:
@@ -120,8 +116,9 @@ def build_amplitudes(
     Ns_phys = site_positions.shape[0]
     if norb_orig != 1:
         raise NotImplementedError(
-            "v2 spec section 7 restricts to norb_orig == 1; got "
-            f"{norb_orig}. Multi-orbital is a v3 extension."
+            "This conversion supports only norb_orig == 1; got "
+            f"{norb_orig}. See "
+            "docs/en/source/uhfk/tools/uhfk_to_mvmc.rst."
         )
 
     partner_rows, is_self_pair = find_partner_rows(wavevector_index, theta, L)
@@ -147,9 +144,10 @@ def build_amplitudes(
             "blocks; got column_spin = " + str(column_spin.tolist())
         )
 
-    # Codex finding 2 (v2 sublattice): pair-closure over (k_row, local_band).
-    # local_band = position of a column within its spin block. In v1
-    # single-orbital cases norb_folded == 1 so local_band was always 0
+    # Enforce pair closure over (k_row, local_band); see
+    # docs/en/source/algorithm/uhfk_to_mvmc.rst. local_band is the
+    # position of a column within its spin block. In single-orbital cases
+    # norb_folded == 1 so local_band is always 0
     # and the tuple check reduced to the row-only check.
     up_cols_list = list(up_cols)
     down_cols_list = list(down_cols)
@@ -188,13 +186,13 @@ def build_amplitudes(
             if stepped_occupation[n_row, col_up] < 0.5:
                 continue
             partner_n = int(partner_rows[n_row])
-            # pair up_col_local with down_col at the SAME local_band index
-            # (spec §3.3.1 Codex finding 2).
+            # Pair up_col_local with down_col at the SAME local_band index;
+            # see docs/en/source/algorithm/uhfk_to_mvmc.rst.
             col_down = down_cols_list[col_up_idx]
             a_up = np.empty(Ns_phys, dtype=np.complex128)
             a_down = np.empty(Ns_phys, dtype=np.complex128)
-            # v2.1: A_down uses plane_wave AT THE PARTNER row (not
-            # ``n_row``). Under the positive-Bloch spec §3.3 convention,
+            # A_down uses plane_wave AT THE PARTNER row (not ``n_row``).
+            # Under the documented positive-Bloch convention,
             # ``plane_wave_up[k, i] = v[k, s(i), l] * exp(+i k_folded
             # R(i)) * exp(+i theta r/L) / sqrt(N_folded)`` is exactly
             # the physical Bloch amplitude at row ``k``, so the down
@@ -222,9 +220,10 @@ def build_fij_phys(A_up, A_down):
     """Return F^phys_{ij} = (A_up @ A_down.T)_{ij}, shape (Ns, Ns) complex.
 
     F is built from ``c^dag_i↑ c^dag_j↓`` pair coefficients under the
-    v2.1 positive-Bloch construction (module docstring). For a
+    positive-Bloch construction (module docstring). For a
     translation-invariant Slater state on the unfolded lattice the
     result depends only on the physical displacement ``r_j - r_i``.
+    See docs/en/source/algorithm/uhfk_to_mvmc.rst.
     """
     A_up = np.asarray(A_up, dtype=np.complex128)
     A_down = np.asarray(A_down, dtype=np.complex128)

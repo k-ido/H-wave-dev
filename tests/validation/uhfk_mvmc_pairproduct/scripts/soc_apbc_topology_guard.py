@@ -1,10 +1,6 @@
-"""SOC + APBC + SubShape topology + mutation guard for v3.6/v3.7 G4 gate.
+"""SOC + APBC + SubShape topology and mutation guard for the G4 gate.
 
-Spec §4.3 (topology composite element) + §6.2 (G4 wiring) + §5.3b
-(PASS record metadata) + plan Task 2g (semantic upgrade) + v3.7 §4b
-(per-direction mutation matrix, plan Task 1d).
-
-Semantic contract (Phase 2g, extended by v3.7 Task 1d):
+Semantic contract:
 
   1. Load ``composite_element.json`` via ``--composite-manifest``.
   2. Load CURRENT-run ``${WORK_DIR}/hwave/green.npz`` (NEVER trust
@@ -12,18 +8,18 @@ Semantic contract (Phase 2g, extended by v3.7 Task 1d):
   3. Assert the manifest's ``(i_c, s_c, j_c, t_c)`` element exists on
      the current run with ``abs(G_current) >= 0.8 * G_c_abs``.
   4. Assert ``s_c != t_c``, ``sub_offset_d(i_c) != sub_offset_d(j_c)``
-     for every active APBC direction ``d`` (``theta_d != 0``, per v3.7
-     spec §4 addendum; v3.6 fixtures only ever have ``d = x`` active,
-     which is exactly the original ``sub_offset_x`` check), and
+     for every active APBC direction ``d`` (``theta_d != 0``), and
      ``abs(G_current) >= 1e-3``.
   5. Run all mutations on the CURRENT run at the composite element;
      assert each ``delta_M >= T_M`` per the manifest's
      ``T_M_per_mutation``. The manifest schema is auto-detected (see
-     ``_iter_mutation_ids``): v3.6's 10-entry whole-vector mutators
-     (``M-gauge-1..5`` + ``M-ship-1..5``) or v3.7's 30-entry
+     ``_iter_mutation_ids``): the 10-entry whole-vector mutators
+     (``M-gauge-1..5`` + ``M-ship-1..5``) or the 30-entry
      per-direction mutators (``M-gauge-1-x`` .. ``M-ship-5-z``).
-  6. On success emit the anchored PASS record per §5.3b. On any
+  6. On success emit the anchored PASS record. On any
      failure exit code 2 + empty stdout.
+
+See ``docs/en/source/uhfk/tools/uhfk_to_mvmc.rst``.
 """
 from __future__ import annotations
 
@@ -35,13 +31,13 @@ import sys
 import numpy as np
 
 
-# v3.6 spec §5.3b single source of truth: G4 metadata.
+# Single source of truth for G4 metadata.
 G4_MODE = "g4"
 G4_ARTIFACT_SOURCE = "hwave+bridge+composite-manifest"
 G4_HELPER = "soc_apbc_topology_guard"
 
 
-# v3.6 schema: whole-vector mutation ids (10 entries). Each mutator
+# Whole-vector mutation ids (10 entries). Each mutator
 # below is applied to the FULL theta/L/dr vector at once.
 _V36_MUTATION_IDS = tuple(
     f"M-gauge-{n}" for n in range(1, 6)
@@ -49,11 +45,11 @@ _V36_MUTATION_IDS = tuple(
     f"M-ship-{n}" for n in range(1, 6)
 )
 
-# v3.7 schema: per-direction mutation ids (30 entries; spec §4b). The
+# Per-direction mutation ids (30 entries). The
 # 10 mutation kinds are split into x/y/z variants that mutate only the
 # named axis component, leaving the other two axes baseline. M-4 has
-# intentionally different schema-specific semantics: the v3.6
-# whole-vector id flips sub_offset. In v3.7, M-gauge-4 omits sub_offset
+# intentionally different schema-specific semantics: the
+# whole-vector id flips sub_offset. Per-direction M-gauge-4 omits sub_offset
 # on its named axis, while M-ship-4 halves that contribution so it is
 # distinct from M-ship-5, which omits it. See the mutator branches below.
 _V37_MUTATION_IDS = tuple(
@@ -68,7 +64,7 @@ _V37_MUTATION_IDS = tuple(
 def _iter_mutation_ids(manifest):
     """Return the mutation-id tuple appropriate for the manifest's
     ``T_M_per_mutation`` schema. Requires an exact-key match against
-    v3.7 (30 entries) or v3.6 (10 entries); else raises since the
+    30-entry or 10-entry schema; otherwise it raises because the
     manifest matches neither known schema."""
     t_m = manifest.get("T_M_per_mutation")
     if not isinstance(t_m, dict):
@@ -87,31 +83,32 @@ def _iter_mutation_ids(manifest):
     if keys < v37 and keys > v36:
         raise ValueError(
             f"manifest T_M_per_mutation looks partially upgraded "
-            f"from v3.6 to v3.7 ({len(keys)} keys, expected 10 or 30). "
-            f"Missing v3.7 keys: {sorted(v37 - keys)}. "
+            f"from 10 to 30 entries ({len(keys)} keys, expected 10 or 30). "
+            f"Missing per-direction keys: {sorted(v37 - keys)}. "
             f"Extra: {sorted(keys - v37)}."
         )
     raise ValueError(
-        f"manifest T_M_per_mutation matches neither v3.6 (10 keys) nor "
-        f"v3.7 (30 keys) schema; got {len(keys)} keys: {sorted(keys)}"
+        f"manifest T_M_per_mutation matches neither the 10-key nor "
+        f"30-key schema; got {len(keys)} keys: {sorted(keys)}"
     )
 
 
 def _split_mutator_id(mutator):
     """Split a mutator id into ``(base_id, axis)``.
 
-    ``"baseline"`` and v3.6 whole-vector ids (``M-gauge-1`` ..
+    ``"baseline"`` and whole-vector ids (``M-gauge-1`` ..
     ``M-ship-5``) return ``axis=None``: the whole-vector mutation (or
-    no mutation at all) applies, exactly reproducing v3.6 behavior.
+    no mutation at all) applies.
 
-    v3.7 per-direction ids (e.g. ``M-gauge-1-x``) return
+    Per-direction ids (e.g. ``M-gauge-1-x``) return
     ``base_id="M-gauge-1"`` and ``axis=0``: the mutation applies to
-    that single vector component only (spec §4b). Mutations 1/2/3/5
-    splice the v3.6 formula into an otherwise-baseline vector; M-4
+    that single vector component only. Mutations 1/2/3/5
+    splice the whole-vector formula into an otherwise-baseline vector; M-4
     instead changes the named-axis sub_offset coefficient because the
-    v3.6 sign flip is structurally invisible on the shipped
+    sign flip is structurally invisible on the shipped
     ``L_folded=2`` lattice. M-gauge-4 omits the contribution;
     M-ship-4 halves it, keeping it distinct from M-ship-5's omission.
+    See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     if mutator == "baseline":
         return mutator, None
@@ -177,8 +174,8 @@ def _validate_manifest_numeric_policy(manifest):
 
     Thresholds are derived data, not manifest-controlled policy. Recompute
     ``max(1e-5, 0.10 * G_c_abs)`` from the manifest's finite ``G_c_abs``.
-    Every v3.6 entry and every active-axis v3.7 entry must equal that value
-    exactly; inactive-axis v3.7 entries must be exactly zero.
+    Every whole-vector entry and every active-axis per-direction entry must
+    equal that value exactly; inactive-axis entries must be exactly zero.
     """
     mutation_ids = _iter_mutation_ids(manifest)
     G_c_abs = _require_finite_float(manifest["G_c_abs"], "G_c_abs")
@@ -275,7 +272,7 @@ def _gauge_lift_element(green_sublattice, i, s, j, t, subshape, cell_shape,
     dr_folded = dr_folded_base.copy()
     # NOTE: must be a defensive copy (not a view) -- np.asarray would
     # alias the caller's persistent theta array when it is already
-    # float64, and the v3.7 per-axis branch below mutates ``theta`` in
+    # float64, and the per-axis branch below mutates ``theta`` in
     # place. The caller reuses the same array across every mutator
     # call in soc_apbc_topology_guard's loop, so an in-place mutation
     # on an aliased view would silently corrupt subsequent mutations.
@@ -292,8 +289,7 @@ def _gauge_lift_element(green_sublattice, i, s, j, t, subshape, cell_shape,
         raise ValueError(f"_gauge_lift_element: unknown mutator {mutator!r}")
 
     if axis is None:
-        # v3.6 whole-vector mutators (and "baseline"): UNCHANGED from
-        # the original v3.6 formula.
+        # Whole-vector mutators and baseline use the full-vector formula.
         if base_id == "M-gauge-1":
             twist_sign = +1.0
         elif base_id == "M-gauge-2":
@@ -308,11 +304,11 @@ def _gauge_lift_element(green_sublattice, i, s, j, t, subshape, cell_shape,
         elif base_id == "M-gauge-5":
             twist_dr = dr_folded_base
     else:
-        # v3.7 per-direction mutators (spec §4b): splice only component
+        # Per-direction mutators splice only component
         # ``axis`` into an otherwise-baseline vector; the other two axes
         # keep their baseline (unmutated) value. M-gauge-4-{x,y,z}
         # deliberately omits sub_offset on the named axis. This differs
-        # from the v3.6 whole-vector M-gauge-4 sign flip above: those are
+        # from the whole-vector M-gauge-4 sign flip above: those are
         # distinct complete mutation ids with schema-frozen semantics.
         if base_id == "M-gauge-1":
             theta[axis] = -theta[axis]
@@ -346,7 +342,7 @@ def _build_A_ship_mutated(mutator, eigen, occ, site_positions, cell_shape,
                           subshape, ncond, boundary_theta):
     """Real M-ship mutation: rebuild the shipping A matrix with the
     mutation applied to the SOC branch of build_slater_orbitals so the
-    G4 gate exercises the exact Phase 4 mutation formulas, not a
+    G4 gate exercises the mutation formulas, not a
     closed-form surrogate that can disagree on fixture-specific phase
     cancellations."""
     from tools._uhfk_to_mvmc.general_fij_builder import (
@@ -402,8 +398,7 @@ def _build_A_ship_mutated(mutator, eigen, occ, site_positions, cell_shape,
         )
 
     if axis is None:
-        # v3.6 whole-vector mutators (and baseline / M-ship-4 /
-        # M-ship-5 which reuse the baseline phys_dn): UNCHANGED.
+        # Whole-vector mutators, baseline, and M-ship-4/5 reuse phys_dn.
         if base_id == "M-ship-1":
             phys_arg = np.einsum(
                 "d,id->i", theta / L_phys,
@@ -430,11 +425,11 @@ def _build_A_ship_mutated(mutator, eigen, occ, site_positions, cell_shape,
             )
             phys_dn = np.exp(-1j * phys_arg)
     else:
-        # v3.7 per-direction mutators (spec §4b): apply the identical
-        # v3.6 formula restricted to component ``axis``; the other
+        # Per-direction mutators apply the same formula restricted to
+        # component ``axis``; the other
         # two axes use the baseline theta/L_phys value. M-ship-4/-5
         # leave phys_dn at its baseline value (they only touch
-        # kf_dot_r below), matching the v3.6 else-branch.
+        # kf_dot_r below), matching the whole-vector else-branch.
         theta_v37 = theta.copy()
         L_phys_v37 = L_phys.copy()
         if base_id == "M-ship-1":
@@ -451,8 +446,7 @@ def _build_A_ship_mutated(mutator, eigen, occ, site_positions, cell_shape,
 
     k_folded_all = 2.0 * np.pi * wvi.astype(np.float64) / L_folded
     if axis is None:
-        # v3.6 whole-vector mutators (and baseline / M-ship-1/2/3
-        # which reuse the baseline kf_dot_r): UNCHANGED.
+        # Whole-vector mutators, baseline, and M-ship-1/2/3 reuse kf_dot_r.
         if base_id == "M-ship-4":
             kf_dot_r = np.einsum(
                 "kd,id->ki", k_folded_all,
@@ -468,12 +462,12 @@ def _build_A_ship_mutated(mutator, eigen, occ, site_positions, cell_shape,
                 (folded_cell + sub_offset).astype(np.float64),
             )
     else:
-        # v3.7 per-direction mutators (spec §4b): the other two axes
+        # Per-direction mutators keep the other two axes
         # keep the baseline (folded_cell + sub_offset) value.
         # M-ship-4-{x,y,z} deliberately halves sub_offset on the named
         # axis, while M-ship-5 omits it. Coefficients 1 (baseline), 1/2
         # (M-4), and 0 (M-5) are distinct by construction. This differs
-        # from the v3.6 whole-vector M-ship-4 sign flip above: those are
+        # from the whole-vector M-ship-4 sign flip above: those are
         # distinct complete mutation ids with schema-frozen semantics.
         # M-ship-1/-2/-3 leave kf_dot_r at its baseline value because
         # they only touch phys_dn above.
@@ -509,7 +503,7 @@ def _build_A_ship_mutated(mutator, eigen, occ, site_positions, cell_shape,
 
 
 def _resolve_workspace(workspace):
-    """Plan Task 3e: canonicalize the workspace path AND every consumed
+    """Canonicalize the workspace path and every consumed
     artifact; reject any resolved artifact under ``tests/data``. The
     shared guard covers the workspace root, subdir-symlink cases, and
     single-artifact-symlink cases."""
@@ -534,10 +528,10 @@ def _resolve_workspace(workspace):
 
 
 def soc_apbc_topology_guard(workspace, composite_manifest_path):
-    """Run the semantic composite + mutation check on the CURRENT-run
+    """Run the semantic composite and mutation check on the current-run
     workspace. Returns a dict with ``max_abs_delta`` and ``tol`` fields
     for the PASS record; raises on any semantic failure so the CLI
-    entry point can convert to exit code 2 + empty stdout per §5.3b."""
+    entry point can convert to exit code 2 and empty stdout."""
     _resolve_workspace(workspace)
     manifest = _load_manifest(composite_manifest_path)
     mutation_ids = _validate_manifest_numeric_policy(manifest)
@@ -568,28 +562,15 @@ def soc_apbc_topology_guard(workspace, composite_manifest_path):
     Nsite = int(np.prod(cell_shape))
 
     # sub_offset differs along every ACTIVE APBC direction (from
-    # manifest — defensively re-checked). v3.6 spec §4.3 condition 2
-    # was phrased as "sub_offset_x differs" only because v3.6 fixtures
-    # never had APBC on any axis but x (the spec's own rationale calls
-    # it "differs in the APBC direction" -- x and "the APBC direction"
-    # were synonymous under v3.6). v3.7 spec §4 addendum generalizes
-    # this per direction: "for each direction d, if theta_d != 0:
-    # require abs(r_j[d] - r_i[d]) > 0", which
-    # phase2_produce_manifest.py's _pick_composite_v37 selector already
-    # enforces when writing the manifest. This defensive re-check was
-    # not updated to match at the time and stayed hardcoded to axis 0
-    # (x), which silently mis-verifies any fixture whose active APBC
-    # axes exclude x (e.g. a y/z-only fixture): it would check an
-    # inactive axis instead of the real composite condition. Active
-    # axes are derived from theta directly rather than the newer
-    # active_apbc_axes manifest key so this also covers manifests
-    # written before that key existed (e.g. the v3.6 shipping fixture's
-    # committed composite_element.json).
+    # manifest — defensively re-checked). Every active direction must have
+    # differing offsets. Active axes are derived from theta directly so the
+    # check also covers manifests without active_apbc_axes. See
+    # ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     so_i_vec = [int(x) for x in manifest["sub_offset_i"]]
     so_j_vec = [int(x) for x in manifest["sub_offset_j"]]
     for _d in range(3):
         if abs(float(theta[_d])) <= 1e-12:
-            continue  # inactive axis: §4b policy, not gated here either.
+            continue  # Inactive axes are not gated.
         if so_i_vec[_d] == so_j_vec[_d]:
             _axis_char = "xyz"[_d]
             raise ValueError(
@@ -603,7 +584,7 @@ def soc_apbc_topology_guard(workspace, composite_manifest_path):
     if G_c_abs_manifest < 1e-3:
         raise ValueError(
             f"composite manifest G_c_abs = {G_c_abs_manifest:.3e} is below "
-            "the §4.3 magnitude floor of 1e-3."
+            "the magnitude floor of 1e-3."
         )
 
     # Load CURRENT-run green_sublattice — NEVER trust manifest values.
@@ -705,11 +686,9 @@ def soc_apbc_topology_guard(workspace, composite_manifest_path):
         ncond, theta,
     )
 
-    # Codex adversarial-review 2026-07-12 hardening: verify the
-    # shadow-copy baseline equals the actual shipping A produced by
-    # build_slater_orbitals BEFORE running the mutation matrix. If the
-    # shadow copy has drifted from the canonical kernel, a drift bug
-    # in build_slater_orbitals is invisible to G4 otherwise.
+    # Verify that the shadow-copy baseline equals the shipping A produced
+    # by build_slater_orbitals before running the mutation matrix. Otherwise,
+    # drift between the shadow copy and canonical kernel would be invisible.
     from tools._uhfk_to_mvmc.general_fij_builder import (
         build_pair_list, build_slater_orbitals, compute_canonical_reps,
     )
@@ -779,18 +758,17 @@ def soc_apbc_topology_guard(workspace, composite_manifest_path):
 
     return {
         "max_abs_delta": max(0.0, 1.0 - magnitude_ratio),
-        "tol": 0.2,  # 20% magnitude drift allowed per §4.3 addendum
+        "tol": 0.2,  # 20% magnitude drift allowed
     }
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description=(
-            "v3.6/v3.7 G4 topology + mutation guard (spec §4.3, §5.3b, "
-            "§6.2, v3.7 §4b). Semantic guard verifies the pinned "
+            "G4 topology and mutation guard. The semantic guard verifies the pinned "
             "composite element on the current-run workspace and runs "
-            "the manifest's mutation matrix (10 v3.6 whole-vector "
-            "mutations, or 30 v3.7 per-direction mutations; schema "
+            "the manifest's mutation matrix (10 whole-vector "
+            "mutations, or 30 per-direction mutations; schema "
             "auto-detected from the manifest)."
         )
     )

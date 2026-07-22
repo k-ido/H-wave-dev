@@ -1,6 +1,6 @@
-"""Shared snapshot-workspace rejection guard for Phase 3e.
+"""Shared snapshot-workspace rejection guard.
 
-Both ``compare.py`` (v3.6 seven-gate dispatcher) and
+Both ``compare.py`` (seven-gate dispatcher) and
 ``soc_apbc_topology_guard.py`` (G4 helper) refuse to consume any
 workspace whose canonical path (or the canonical path of a shipped-in
 artifact under it) lives under ``tests/data/``. That directory holds
@@ -8,7 +8,7 @@ unit-test snapshots, not live producer output; running a real E2E gate
 against them would silently give a green record without exercising the
 producer chain.
 
-Contract (spec §6.4 addendum / plan Task 3e):
+Contract:
 
 - Resolve the workspace with ``Path.resolve(strict=True)``. If it lives
   under any of the reachable ``tests/data`` roots, raise
@@ -18,6 +18,8 @@ Contract (spec §6.4 addendum / plan Task 3e):
   workspace root itself would not catch), raise the same exception.
 - The caller converts the exception into exit code 2 + empty stdout so
   the anchored PASS record cannot be printed.
+
+See ``docs/en/source/uhfk/tools/uhfk_to_mvmc.rst``.
 """
 from __future__ import annotations
 
@@ -31,16 +33,14 @@ class SnapshotWorkspaceRejected(RuntimeError):
     under ``tests/data/``. Callers translate this into exit code 2."""
 
 
-# Codex adversarial-review 2026-07-12 hardening: resolve tests/data root
-# from THIS module's location, not the process CWD. Otherwise invoking a
-# guard from /tmp with an absolute workspace path under the repo's
-# tests/data silently bypasses the snapshot check.
+# Resolve the ``tests/data`` root from this module's location, not the
+# process CWD, so invocation from elsewhere cannot bypass the snapshot check.
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT_FROM_SCRIPT = _SCRIPTS_DIR.parents[3]  # scripts/../../../..
 _TESTS_DATA_ROOTS_ABS = (_REPO_ROOT_FROM_SCRIPT / "tests" / "data",)
 
 
-# Artifacts every v3.6 gate helper reads, relative to the workspace. If
+# Artifacts the gate helpers read, relative to the workspace. If
 # any of these paths (after full realpath) canonicalize under
 # ``tests/data``, the helper must refuse the workspace even if the
 # workspace root itself is a benign tmp directory.

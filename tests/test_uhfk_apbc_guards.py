@@ -40,7 +40,7 @@ def test_apbc_with_explicit_subshape_111_is_accepted():
 
 
 def test_apbc_with_omitted_subshape_is_accepted():
-    """v2: default SubShape (= CellShape) is acceptable under APBC.
+    """Default SubShape (= CellShape) is acceptable under APBC.
 
     The gauge phase is applied to Transfer in its pre-fold signed-irvec
     representation, so any sublattice choice is valid (including the
@@ -52,7 +52,7 @@ def test_apbc_with_omitted_subshape_is_accepted():
 
 
 def test_apbc_with_nontrivial_subshape_is_accepted():
-    """v2: SubShape > [1, 1, 1] combined with APBC is supported."""
+    """SubShape > [1, 1, 1] combined with APBC is supported."""
     s = _make_stub(_base_mod(
         boundary=["antiperiodic", "periodic", "periodic"],
         subshape=[2, 1, 1],

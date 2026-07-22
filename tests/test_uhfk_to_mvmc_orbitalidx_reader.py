@@ -1,4 +1,4 @@
-"""Tests for orbitalidx.def parser (spec section 4.2 / 4.3)."""
+"""Tests for the ``orbitalidx.def`` parser."""
 from __future__ import annotations
 
 import sys, os, tempfile

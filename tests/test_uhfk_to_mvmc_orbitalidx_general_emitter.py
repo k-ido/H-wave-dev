@@ -1,4 +1,4 @@
-"""Tests for orbitalidx_general_emitter (v3.2 all-unique-classes fallback).
+"""Tests for orbitalidx_general_emitter (all-unique-classes fallback).
 
 The emitter is triggered under SOC + SubShape > [1, 1, 1] to bypass
 StdFace's class over-grouping. The tests verify that:

@@ -1,16 +1,17 @@
-"""Sublattice unfold helpers for SubShape > [1, 1, 1] (spec §3.1, §4.1).
+"""Sublattice unfold helpers for SubShape > [1, 1, 1].
 
 Physical site coordinates come from ``geometry_uhf.dat``. The decode
-functions consume ``(cx, cy, cz)`` integer lattice coords directly
-(never a row-major site ordinal — Codex finding 3).
+functions consume ``(cx, cy, cz)`` integer lattice coords directly,
+never a row-major site ordinal.
 
-Encoding matches ``_apbc_phase.sublattice_offset`` inverse (spec §3.5):
+Encoding matches ``_apbc_phase.sublattice_offset`` inverse:
     folded_orb = orig_orb + norb_orig * (sx + Sx * (sy + Sy * sz))
 
-Down-spin row offset (Codex finding 1): in H-wave's non-spin-orbital
+For the down-spin row offset in H-wave's non-spin-orbital
 mode, ``nd = 2 * norb_folded`` and down rows begin at ``norb_folded``.
 ``folded_row_indices`` exposes both row indices so the bridge never
-addresses the up block when it means the down block.
+addresses the up block when it means the down block. See
+docs/en/source/algorithm/uhfk_to_mvmc.rst.
 """
 from __future__ import annotations
 
@@ -38,7 +39,10 @@ def encode_folded_orbital(
     norb_orig: int,
     subshape: np.ndarray,
 ) -> int:
-    """(orig_orb, sub_offset) → folded_orb (spec §3.5 encoding)."""
+    """Encode ``(orig_orb, sub_offset)`` as ``folded_orb``.
+
+    See docs/en/source/algorithm/uhfk_to_mvmc.rst.
+    """
     sub_offset = np.asarray(sub_offset, dtype=np.int64)
     subshape = np.asarray(subshape, dtype=np.int64)
     sx, sy, sz = int(sub_offset[0]), int(sub_offset[1]), int(sub_offset[2])
@@ -47,7 +51,7 @@ def encode_folded_orbital(
 
 
 def folded_row_indices(folded_orb: int, norb_folded: int) -> tuple[int, int]:
-    """Return (row_up, row_down) in the folded nd index (Codex finding 1)."""
+    """Return (row_up, row_down) in the folded nd index."""
     return int(folded_orb), int(norb_folded) + int(folded_orb)
 
 
@@ -63,12 +67,12 @@ def unfold_amplitude_columns(
     row_down_per_site).
 
     plane_wave_up[k, i]   = exp(+i k_folded · folded_cell_i) * exp(+i theta · r_i / L_phys) / sqrt(nvol_folded)
-    plane_wave_down[k, i] = plane_wave_up[k, i]  (v2.1: partner-row lookup lives in the caller)
+    plane_wave_down[k, i] = plane_wave_up[k, i]  (partner-row lookup lives in the caller)
     row_up_per_site[i]   = folded_orb_i
     row_down_per_site[i] = norb_folded + folded_orb_i
 
-    Sign convention (v2.1, spec §3.3 revision)
-    ------------------------------------------
+    Sign convention
+    ---------------
     H-wave's folded eigenvector ``v[k_folded, aa, l]`` is diagonalized
     under the negative-gauge APBC transformation ``tilde_c_r =
     exp(-i theta r / L_phys) c_r`` (see :file:`_apbc_phase.py`), and its
@@ -83,15 +87,9 @@ def unfold_amplitude_columns(
                     * exp(+i k_folded . folded_cell(r))
                     * exp(+i theta . r / L_phys).
 
-    Verified against H-wave's ``greenone.dat`` for the APBC L=8
-    SubShape=[2,1,1] fixture (element-wise match to 1e-14). For
-    ``SubShape = [1, 1, 1]`` the (k, -k) time-reversal pair sum
-    symmetrises the plane-wave factor and both signs produce the same
-    density (verified by the v1 case_pbc / case_apbc / case_apbc_halffill
-    tests), so this convention change does not affect the numerical G
-    of any v1 physical UHF SCF output — only the individual synthetic
-    single-k amplitudes rotate by a global phase per column that leaves
-    ``A_up @ A_up^dagger`` unchanged.
+    For ``SubShape = [1, 1, 1]`` the (k, -k) time-reversal pair sum
+    symmetrises the plane-wave factor, so both signs produce the same
+    density. See docs/en/source/algorithm/uhfk_to_mvmc.rst.
     """
     folded_wavevector_index = np.asarray(folded_wavevector_index, dtype=np.int64)
     cell_shape = np.asarray(cell_shape, dtype=np.int64)
@@ -129,17 +127,13 @@ def unfold_amplitude_columns(
     phys_arg = np.einsum("d,id->i", theta_over_L, site_positions.astype(np.float64))
     phys_up = np.exp(+1j * phys_arg)   # exp(+i theta r / L)
 
-    # v2.1: down uses the SAME plane-wave envelope as up. The (k, -k)
+    # Down uses the SAME plane-wave envelope as up. The (k, -k)
     # time-reversal partnership is resolved via the caller's
     # ``eigenvector[partner_n, row_down_per_site[i], col_down]`` lookup
     # (fij_builder.build_amplitudes), NOT via a separately-conjugated
-    # plane_wave_down. For real ``v`` (v1 no-band-mixing scenarios) the
-    # legacy plane_wave_down = conj(plane_wave_up_folded) * phys_down
-    # was numerically equivalent because ``v[partner_n, aa=0, l]``
-    # collapsed to a real scalar and phys_down = conj(phys_up); for
-    # ``SubShape > [1, 1, 1]`` with complex ``v[partner_n, aa>0, l]``
-    # the two paths diverge and only this unified form reproduces
-    # H-wave's ``greenone.dat`` on both spins.
+    # plane_wave_down. This unified form reproduces H-wave's
+    # ``greenone.dat`` on both spins; see
+    # docs/en/source/algorithm/uhfk_to_mvmc.rst.
     plane_wave_up = plane_wave_up_folded * phys_up[np.newaxis, :]
     plane_wave_down = plane_wave_up_folded * phys_up[np.newaxis, :]
 

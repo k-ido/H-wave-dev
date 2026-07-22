@@ -1,6 +1,6 @@
-"""§11.6 phase5_gate.py orchestrator contract tests.
+"""phase5_gate.py orchestrator contract tests.
 
-Includes closure tests for §14.1 residual risks: marker gate cannot be
+Includes tests for residual risks: marker gate cannot be
 bypassed by direct live-smoke call, static failure prevents UHF exec,
 stale marker rejected, atomic trans.def substitution on failure.
 """
@@ -121,7 +121,7 @@ def _real_workspace_template(tmp_path_factory):
 
 
 def _copy_real_workspace(tmp_path: Path) -> tuple[Path, Path]:
-    """Copy a shipped Phase 5 workspace at its pre-static-check layout."""
+    """Copy a shipped workspace at its pre-static-check layout."""
     assert _REAL_WORKSPACE_TEMPLATE is not None
     workspace = tmp_path / "work"
     fixture_root = tmp_path / "fixture"
@@ -328,7 +328,7 @@ def test_static_failure_raises_without_marker(tmp_path):
 
 
 def test_live_smoke_refuses_without_static_marker(tmp_path):
-    """CLOSURE OF §14.1 F.2: live_smoke MUST refuse to spawn UHF if
+    """live_smoke MUST refuse to spawn UHF if
     the marker is missing. No require_marker opt-out parameter exists."""
     ws = _make_workspace_and_bundle(tmp_path)
     with patch("subprocess.run") as run_mock:
@@ -338,12 +338,12 @@ def test_live_smoke_refuses_without_static_marker(tmp_path):
             )
         assert not run_mock.called, (
             "subprocess.run was invoked despite missing marker; "
-            "gate bypass. §14.1 residual finding 2 regressed."
+            "gate bypass."
         )
 
 
 def test_live_smoke_refuses_stale_marker(tmp_path):
-    """CLOSURE OF §14.1 F.3: mutating an artifact hash referenced by
+    """Mutating an artifact hash referenced by
     the marker AFTER static success MUST cause live_smoke to refuse
     UHF exec."""
     ws = _make_workspace_and_bundle(tmp_path)
@@ -367,7 +367,7 @@ def test_live_smoke_refuses_stale_marker(tmp_path):
 
 
 def test_atomic_trans_def_writeout_on_failure(tmp_path):
-    """CLOSURE OF §14.1 F.1 (partial): if os.replace fails after
+    """If os.replace fails after
     writing to trans.def.tmp, the target trans.def is unchanged and
     the temp file is cleaned up."""
     ws = _make_workspace_and_bundle(tmp_path)
@@ -386,7 +386,7 @@ def test_atomic_trans_def_writeout_on_failure(tmp_path):
 
 
 def test_run_phase5_gate_static_failure_aborts_before_live_smoke(tmp_path):
-    """§11.6 sole-entry-point wrapper: if the static tier fails, the
+    """If the static tier fails, the
     live smoke launcher is NEVER reached — the safety property (static
     must precede live) holds by construction."""
     from tools._uhfk_to_mvmc.phase5_gate import run_phase5_gate

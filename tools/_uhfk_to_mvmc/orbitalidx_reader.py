@@ -1,10 +1,12 @@
 """Parser for mVMC orbitalidx.def (AntiParallel) input file.
 
-Spec section 4.2 / 4.3 / mVMC 1.4.0 doc/en/source/expert.rst:2542-2675.
 Supports:
 - 3-column form: ``i j orbital_idx`` (PBC; ``NMPTrans > 0``)
 - 4-column form: ``i j orbital_idx sign`` (APBC; ``NMPTrans < 0``)
 Followed by ``NOrbitalIdx`` optimize-flag lines: ``idx optimize``.
+
+See docs/en/source/uhfk/tools/uhfk_to_mvmc.rst for path selection and
+accepted formats.
 """
 from __future__ import annotations
 

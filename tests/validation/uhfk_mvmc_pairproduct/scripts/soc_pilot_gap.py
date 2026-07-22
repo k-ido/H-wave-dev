@@ -7,8 +7,8 @@ compute a gap for every requested candidate ``Ncond``: this is a
 non-interacting-style band-structure gap check that identifies which
 fillings sit inside a spectral gap of the converged Hamiltonian.
 
-Marker ``OK`` requires the candidate ``Ncond`` to be even (v3.1 SOC
-fixture rule -- Ne must be even to fit into the AntiParallel /
+Marker ``OK`` requires the candidate ``Ncond`` to be even (Ne must fit
+into the AntiParallel /
 spin-mixed sector) AND the gap to be at least ``1e-3``. Any other
 outcome is ``REJECT``.
 """

@@ -1,8 +1,10 @@
 """Density matrix consistency check against H-wave's _UHF_cisajs.dat.
 
-Spec section 5.1. G_{ij} = <c^dag_i c_j> in H-wave's convention is
+G_{ij} = <c^dag_i c_j> in H-wave's convention is
    G^sigma_{ij} = sum_alpha (A^sigma)^*_{i, alpha} A^sigma_{j, alpha}
               = (A^sigma.conj() @ A^sigma.T)_{ij}
+
+See docs/en/source/algorithm/uhfk_to_mvmc.rst.
 """
 from __future__ import annotations
 
@@ -42,7 +44,7 @@ def compare_against_onebodyg_uhf(
 ):
     """Compare bridge-built G^up, G^down against H-wave's _UHF_cisajs.dat.
 
-    Spec section 5.1: line by line iterate (i, s, j, t) entries; bridge
+    Line by line, iterate (i, s, j, t) entries; the bridge
     side returns G^s_{ij} (s == t required, otherwise 0 for Sz-fixed).
     """
     entries = parse_uhf_cisajs_dat(onebodyg_uhf_path)
@@ -81,16 +83,12 @@ def compare_against_green_sublattice(
     boundary_theta: tuple = (0.0, 0.0, 0.0),
 ) -> None:
     """Compare bridge-built physical G against H-wave's folded
-    ``green_sublattice`` (v3.2 SOC + SubShape > [1, 1, 1] fallback).
+    ``green_sublattice``.
 
     Under SOC + SubShape > [1, 1, 1], H-wave's ``greenone.dat`` is
-    currently buggy (see memory/feedback_hwave_sublattice_green_testing.md
-    — "green/greenone は別ブランチ対応中のバグありで使わない"), so the
-    default ``compare_against_onebodyg_uhf_general`` path cannot serve as
-    the density-check reference. This function folds the bridge's
-    physical ``G_all`` back to the supercell basis and compares
-    element-wise against ``green.npz['green_sublattice']``, which is the
-    reliable observable H-wave exports for this path.
+    not used as the density-check reference. This function folds the
+    bridge's physical ``G_all`` back to the supercell basis and compares
+    element-wise against ``green.npz['green_sublattice']``.
 
     Fold formula (matches H-wave's ``_reshape_orbit_spin`` encoding):
 
@@ -107,36 +105,22 @@ def compare_against_green_sublattice(
     (r_i, r_j) pair mapping to a given (R_diff, aa, bb) class must give
     the same value; a residual > ``tol`` is a bridge bug.
 
-    v3.5 SOC gauge-lift mode (2026-07-05)
-    -------------------------------------
-    When ``is_soc_sublattice_mode=True`` (Codex v3.5 spec §3), the check
+    When ``is_soc_sublattice_mode=True``, the check
     switches from folding G_all back to the supercell basis to instead
     LIFTING ``green_sublattice`` to the physical basis via ``gauge_lift``
     and comparing to ``G_all`` element-wise on the full 2Ns x 2Ns block.
-    This gauge-invariant lift restores a strict density gate for the
-    SOC + SubShape > [1, 1, 1] path without needing the v3.4 dual-A
-    reference-convention scaffold. Requires ``cell_shape``, ``subshape``,
+    This gauge-invariant lift provides a strict density gate for the
+    SOC + SubShape > [1, 1, 1] path. Requires ``cell_shape``, ``subshape``,
     ``site_positions``; ``Ns`` defaults to ``site_positions.shape[0]``.
 
-    Known limitation (2026-07-04)
-    -----------------------------
-    Passing this check is NECESSARY but NOT SUFFICIENT for a correct
-    Slater WF. Empirical finding on ``case_soc_rashba_2d_sub``: the
-    bridge's ``build_slater_orbitals`` (SOC branch) currently emits a
-    WF that passes ``compare_against_green_sublattice`` at 1e-10 but
-    still disagrees with H-wave's ``Energy_Total`` by ~17 units in mVMC.
-    Root cause: the WF reproduces the folded green_sublattice diagonal
-    (n_up per sub_offset class) but has WRONG off-diagonal cross-spin
-    entries relative to the physical Slater H-wave converged to. An
-    independent ComplexUHF SCF on the bridge's trans.def confirms the
-    Hamiltonian coefficients are correct; the WF construction is the
-    bug. See ``tests/validation/uhfk_mvmc_pairproduct/run.sh`` step 6
-    comment (case_soc_rashba_2d_sub) for the full diagnostic.
+    See docs/en/source/algorithm/uhfk_to_mvmc.rst for the gauge
+    composition and physical-density convention.
     """
     G_all = np.asarray(G_all, dtype=np.complex128)
 
     if is_soc_sublattice_mode:
-        # v3.5 Phase B: SOC + SubShape gauge-lift branch (spec §3).
+        # Apply the documented SOC + SubShape gauge lift; see
+        # docs/en/source/algorithm/uhfk_to_mvmc.rst.
         assert (
             cell_shape is not None
             and subshape is not None
@@ -185,7 +169,7 @@ def compare_against_green_sublattice(
             )
         return
 
-    # v3.4 non-SOC+SubShape (folded-Green) path (unchanged).
+    # The non-SOC sublattice path uses the folded-Green comparison.
     assert (
         site_positions is not None
         and cell_shape is not None
@@ -286,10 +270,8 @@ def gauge_lift(green_sublattice, site_i, spin_i, site_j, spin_j,
                boundary_theta):
     """Reconstruct G_phys[all_i, all_j] independently from green_sublattice.
 
-    See docs/superpowers/specs/2026-07-05-uhfk-mvmc-pairproduct-general-v35-design.md
-    §2 for the v3.5 (PBC) derivation and
-    docs/superpowers/specs/2026-07-09-uhfk-mvmc-pairproduct-general-v36-design.md
-    §2.3, §3.2 for the v3.6 APBC composition. Convention: G[all_i, all_j] =
+    See docs/en/source/algorithm/uhfk_to_mvmc.rst for the sublattice and
+    APBC gauge composition. Convention: G[all_i, all_j] =
     sum_alpha conj(A[all_i, alpha]) * A[all_j, alpha], matching H-wave's
     _green (conj(V_a) * V_b) and the existing bridge density check.
 
@@ -315,12 +297,12 @@ def gauge_lift(green_sublattice, site_i, spin_i, site_j, spin_j,
         Twist ``(theta_x, theta_y, theta_z)`` in RADIANS. Each component
         in ``{0, pi}`` under Periodic / Antiperiodic. Passed WITHOUT
         conversion; callers MUST pass radians, NOT the dimensionless
-        ``twist_offset = theta / (2*pi)``. The v3.6 composed phase is
+        ``twist_offset = theta / (2*pi)``. The composed phase is
         ``exp(-i k_folded . dr_folded) * exp(-i theta . dr_full / L_full)``
         where ``dr_full = r_phys_j - r_phys_i`` and
         ``L_full = SubShape * L_folded``. Under PBC (all-zero theta) the
         twist factor collapses to 1 and the output is bit-identical to
-        the v3.5 result.
+        the PBC result.
 
     Returns
     -------
@@ -340,7 +322,7 @@ def gauge_lift(green_sublattice, site_i, spin_i, site_j, spin_j,
     G_k = np.fft.ifftn(gs, axes=(0, 1, 2), norm="forward")
 
     # H-wave folded SOC row: 2 * folded_orb + spin under enable_spin_orbital.
-    # v3.5 scope: single physical orbital (norb_orig==1); folded_orb is the
+    # This path supports one physical orbital (norb_orig==1); folded_orb is the
     # flat sublattice index within the folded cell.
     r_phys_i = np.asarray(site_positions[site_i], dtype=np.int64)
     r_phys_j = np.asarray(site_positions[site_j], dtype=np.int64)
@@ -353,9 +335,10 @@ def gauge_lift(green_sublattice, site_i, spin_i, site_j, spin_j,
     aa = 2 * folded_orb_i + int(spin_i)
     bb = 2 * folded_orb_j + int(spin_j)
 
-    # v3.6 spec §3.2: twist gauge is k-independent per (i, j) pair; hoist
+    # The twist gauge is k-independent per (i, j) pair, so hoist
     # it out of the k loop. Under PBC (all-zero theta) phase_twist == 1
-    # and the result is bit-identical to the v3.5 formula.
+    # and the result reduces exactly to the PBC formula. See
+    # docs/en/source/algorithm/uhfk_to_mvmc.rst.
     r_diff_folded = (fc_j.astype(np.float64) + so_j.astype(np.float64)) \
                     - (fc_i.astype(np.float64) + so_i.astype(np.float64))
     r_diff_full = r_phys_j.astype(np.float64) - r_phys_i.astype(np.float64)
@@ -371,8 +354,8 @@ def gauge_lift(green_sublattice, site_i, spin_i, site_j, spin_j,
                 phase_folded = np.exp(-1j * np.dot(k_vec, r_diff_folded))
                 accum += G_k[kx, ky, kz, aa, bb] * phase_folded
     accum *= phase_twist
-    # Codex v3.5 spec Rev.5 finding: divide by N_folded to match H-wave's
-    # forward-normalized fftn convention.
+    # Divide by N_folded to match H-wave's forward-normalized fftn
+    # convention; see docs/en/source/algorithm/uhfk_to_mvmc.rst.
     return accum / float(np.prod(L_folded))
 
 
@@ -381,16 +364,16 @@ def compare_against_onebodyg_uhf_general(
     is_soc_mode: bool = False,
 ) -> None:
     """Compare bridge-built 2Ns × 2Ns G against H-wave's greenone.dat
-    for the General path (spec §4.5, §3.7).
+    for the General path.
 
     G_all[iσ, jσ'] = <c^†_{i,σ} c_{j,σ'}> in the physical basis with
     the mVMC spin-block index ``all_i = i + σ * Ns`` (site-major,
     spin-minor). greenone.dat lines are ``i s j t re im`` and are
     compared element-wise to ``G_all[i + s*Ns, j + t*Ns]``.
 
-    Behavior by mode (spec §3.7):
+    Behavior by mode:
 
-    ``is_soc_mode=False`` (v3 Sz-diagonal path)
+    ``is_soc_mode=False`` (Sz-diagonal path)
         The bridge produces a spin-block-diagonal ``G_all`` because
         amplitudes are Sz-fixed. Reference greenone.dat rows with
         s == t compare element-wise. Rows with s != t are also
@@ -398,10 +381,10 @@ def compare_against_onebodyg_uhf_general(
         off-diagonal blocks, any non-zero s != t reference value
         raises ``DensityMismatchError``. This element-wise comparison
         is the mixed-block scope-violation guard: it catches the case
-        where a caller feeds SOC-tainted reference data into the v3
+        where a caller feeds SOC-tainted reference data into the General
         path.
 
-    ``is_soc_mode=True`` (v3.1 SOC path)
+    ``is_soc_mode=True`` (SOC path)
         Both G_all and the reference greenone.dat carry physically
         non-zero s != t entries. Every row is compared under the same
         `tol` regardless of (s, t); the scope-violation framing does
@@ -410,7 +393,10 @@ def compare_against_onebodyg_uhf_general(
 
     Both modes share the same comparison kernel: uniform element-wise
     match under `tol`. The flag documents intent and gates any future
-    mode-specific diagnostics without changing v3 behavior.
+    mode-specific diagnostics without changing comparison behavior.
+
+    See docs/en/source/algorithm/uhfk_to_mvmc.rst for the physical
+    density orientation and spin-block indexing convention.
     """
     G_all = np.asarray(G_all, dtype=np.complex128)
     two_ns = G_all.shape[0]
@@ -427,7 +413,7 @@ def compare_against_onebodyg_uhf_general(
             diffs.append((i, s, j, t, v_bridge, v_uhf))
     if diffs:
         head = diffs[:3]
-        mode_label = "SOC" if is_soc_mode else "v3 Sz-diagonal"
+        mode_label = "SOC" if is_soc_mode else "Sz-diagonal"
         raise DensityMismatchError(
             f"{len(diffs)} (i, s, j, t) entries differ beyond tol={tol} "
             f"[{mode_label} mode]; first 3: {head}"

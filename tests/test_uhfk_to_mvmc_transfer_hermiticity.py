@@ -1,4 +1,7 @@
-"""§11.4 pin for tools/_uhfk_to_mvmc/transfer_hermiticity.py."""
+"""Tests for tools/_uhfk_to_mvmc/transfer_hermiticity.py.
+
+See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
+"""
 from __future__ import annotations
 
 import os
@@ -31,13 +34,13 @@ _MANIFEST_PRODUCER = (
 
 
 def test_accepts_v36_shipping_fixture():
-    """v3.6 case_soc_rashba_2d_sub_apbc Transfer.dat MUST pass."""
+    """case_soc_rashba_2d_sub_apbc Transfer.dat MUST pass."""
     assert len(parse_hwave_transfer(_V36_TRANSFER)) == 16
     check_transfer_dat_hermiticity(_V36_TRANSFER)
 
 
 def test_accepts_v37_shipping_fixture():
-    """v3.7 case_soc_rashba_3d_sub_apbc_xy Transfer.dat MUST pass."""
+    """case_soc_rashba_3d_sub_apbc_xy Transfer.dat MUST pass."""
     assert len(parse_hwave_transfer(_V37_TRANSFER)) == 24
     check_transfer_dat_hermiticity(_V37_TRANSFER)
 
@@ -139,7 +142,7 @@ def test_rejects_missing_partner(tmp_path):
 
 
 def test_rejects_missing_real_same_spin_offsite_z_partner(tmp_path):
-    """Deleting one real z-hopping partner from the v3.7 fixture fails."""
+    """Deleting one real z-hopping partner from the fixture fails."""
     lines = _V37_TRANSFER.read_text().splitlines()
     missing_partner = (
         "     0    0   -1    1    1  -1.000000000000  0.000000000000"

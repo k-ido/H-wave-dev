@@ -1,4 +1,7 @@
-"""Tests for (k, -k) partner index lookup (spec section 3.3)."""
+"""Tests for (k, -k) partner index lookup.
+
+See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
+"""
 from __future__ import annotations
 
 import numpy as np
@@ -102,7 +105,7 @@ def test_partner_mixed_pbc_apbc_2d():
 
 def test_partner_apbc_folded_l4_from_l8_subshape_2():
     """L=8 CellShape reduced by SubShape=[2,1,1] to folded L_folded=4.
-    APBC partner should follow (-n - 1) mod 4 (same as v1 L=4 APBC)."""
+    APBC partner should follow (-n - 1) mod 4."""
     L_folded = 4
     wv = np.array([[v, 0, 0] for v in _klist(L_folded)], dtype=np.int64)
     theta = np.array([np.pi, 0.0, 0.0], dtype=np.float64)

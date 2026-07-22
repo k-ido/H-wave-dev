@@ -39,7 +39,7 @@
   },
   "i_c": 0,
   "j_c": 5,
-  "manifest_schema": "v3.6-10entry",
+  "manifest_schema": "whole-vector-10entry",
   "ncond": 8,
   "s_c": 1,
   "site_position_i": [

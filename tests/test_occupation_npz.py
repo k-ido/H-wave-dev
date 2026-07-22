@@ -7,10 +7,9 @@ file is consumed downstream by the H-wave -> mVMC PairProduct bridge
 to project finite-T occupations onto Slater determinants without
 re-running the SCF.
 
-See docs/superpowers/specs/2026-06-30-uhfk-mvmc-pairproduct-bridge-design.md
-section 4.1 for the file schema. The tests drive UHFk through its normal
-SCF entry point so the saved state matches what production runs would
-emit.
+The tests drive UHFk through its normal SCF entry point so the saved state
+matches what production runs emit. The bridge usage is documented in
+``docs/en/source/uhfk/tools/uhfk_to_mvmc.rst``.
 """
 from __future__ import annotations
 

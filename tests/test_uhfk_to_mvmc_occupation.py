@@ -114,10 +114,10 @@ def test_sz_free_column_spin_minus_one_fails_fast():
 
 
 def test_step_occupation_accepts_all_mixed_columns_under_soc_mode():
-    """v3.1 SOC path: column_spin = -1 accepted, lowest Ncond occupied.
+    """SOC accepts column_spin = -1 and occupies the lowest Ncond states.
 
     Note: SCF occupation values are 0/1 (T=0 Slater determinant) so
-    the fractional-residual guard (spec 3.5) passes; the intent here is
+    the fractional-residual guard passes; the intent here is
     to verify the SOC-mode dispatch bypasses the ``column_spin < 0``
     reject and that eigenvalue ordering selects the lowest ``Ncond``
     states regardless of spin label.
@@ -143,7 +143,7 @@ def test_step_occupation_accepts_all_mixed_columns_under_soc_mode():
 
 
 def test_step_occupation_rejects_mixed_columns_without_soc_mode():
-    """v3 path: column_spin = -1 without is_soc_mode still raises."""
+    """column_spin = -1 without is_soc_mode still raises."""
     with pytest.raises(OccupationGuardError, match="column_spin = -1"):
         step_occupation(
             np.zeros((2, 2)), np.zeros((2, 2)),

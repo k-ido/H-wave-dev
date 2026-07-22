@@ -1,6 +1,6 @@
-"""Energy comparison helper for v3.6 G3 gate (spec §5.6).
+"""Energy comparison helper for the G3 gate.
 
-Introduces the canonical helper `energy_relative_delta` and the workspace
+Provides the canonical helper `energy_relative_delta` and the workspace
 resolver `_resolve_g3_paths` used by `tests/validation/uhfk_mvmc_pairproduct/
 compare.py --mode g3`.
 
@@ -10,9 +10,11 @@ resolution lives in `_resolve_g3_paths`.
 
 `_resolve_g3_paths` reads only the canonical `${workspace}/mvmc/
 zvo_out_selected.dat` produced by the run.sh normalization step
-(`normalize_mvmc_output` in Phase 6). Raw `zvo_out_*.dat` selection is
+(`normalize_mvmc_output`). Raw `zvo_out_*.dat` selection is
 NOT done here; that lives in run.sh so mVMC binary variants (multi-sample
 outputs, `output/` vs flat layout) are handled outside G3's contract.
+
+See docs/en/source/uhfk/tools/uhfk_to_mvmc.rst for the validation gates.
 """
 from __future__ import annotations
 
@@ -94,7 +96,8 @@ def energy_relative_delta(
     """Return ``(E_hwave, E_mvmc, delta_rel)`` from the two file paths.
 
     ``delta_rel = |E_mvmc - E_hwave| / max(|E_hwave|, 1e-12)`` is the
-    relative energy delta used by the v3.6 G3 gate (spec §5.6).
+    relative energy delta used by the G3 gate. See
+    docs/en/source/uhfk/tools/uhfk_to_mvmc.rst.
 
     `E_hwave` is `Energy_Total` from H-wave's `energy.dat`. `E_mvmc` is the
     mean of `<H>` samples from mVMC's `zvo_out_*.dat` (column 0). Both
@@ -124,11 +127,13 @@ def energy_relative_delta(
 def _resolve_g3_paths(workspace: str) -> Tuple[str, str]:
     """Return ``(hwave_energy_path, mvmc_zvo_out_selected_path)`` for G3.
 
-    Spec §5.6 producer contract: the caller (Phase 6 `run.sh`) MUST have
+    The caller (`run.sh`) MUST have
     normalized mVMC output to `${workspace}/mvmc/zvo_out_selected.dat`
     before invoking G3. This resolver never scans raw `zvo_out_*.dat`;
     the multi-file / layout-variant selection is `normalize_mvmc_output`'s
     responsibility in run.sh.
+
+    See docs/en/source/uhfk/tools/uhfk_to_mvmc.rst for the G3 contract.
 
     Raises FileNotFoundError with a documented message if either canonical
     path is missing. The message names the file so callers can distinguish

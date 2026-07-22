@@ -42,7 +42,6 @@ def _make_stub_with_eigen_state(boundary_theta):
     s.kvec = np.diag([2 * np.pi / L, 2 * np.pi, 2 * np.pi]).astype(np.float64)
     s.wavenum_table = np.array([[n, 0, 0] for n in range(L)], dtype=np.int64)
 
-    # APBC bookkeeping (added by Task 3).
     s.boundary_theta = tuple(boundary_theta)
     s.boundary_periodic = all(t == 0.0 for t in boundary_theta)
 

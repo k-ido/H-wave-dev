@@ -29,9 +29,7 @@ def load_input_toml(path):
     values therefore take precedence if a key is present in both.
 
     The merge lets the CLI look up ``enable_spin_orbital`` regardless
-    of whether the user placed it under ``[mode]`` (the H-wave
-    convention that all SOC fixtures use) or ``[mode.param]`` (the
-    layout the pre-v3.1 dispatch tests use).
+    of whether the user placed it under ``[mode]`` or ``[mode.param]``.
     """
     with open(path, "rb") as fp:
         data = tomllib.load(fp)
@@ -74,10 +72,10 @@ def load_geometry_uhf(path):
     site_R_int : (Ns, 3) float
         Integer cell indices ``R_i`` per site, returned as float for
         downstream einsum convenience. Sites with ``orb_idx != 0`` are
-        skipped (v1 single-orbital scope).
+        skipped because this bridge path supports one physical orbital.
     norb : int
         Number of distinct orbitals per cell (count of site lines with
-        ``R == (0, 0, 0)``); used by the CLI to enforce the v1
+        ``R == (0, 0, 0)``); used by the CLI to enforce the
         ``norb_orig == 1`` guard.
 
     Note
@@ -110,7 +108,7 @@ def load_geometry_uhf(path):
         if R == (0, 0, 0):
             norb += 1
         if orb != 0:
-            continue  # v1 single-orbital scope
+            continue  # This bridge path supports one physical orbital.
         site_R.append(R)
     if not site_R:
         raise ValueError(f"{path}: no site lines with orb_idx==0 found")

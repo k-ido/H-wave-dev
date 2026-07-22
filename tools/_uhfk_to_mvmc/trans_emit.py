@@ -1,4 +1,4 @@
-"""H-wave Transfer.dat -> mVMC trans.def emitter for SOC (v3.1 spec §3.8).
+"""H-wave Transfer.dat -> mVMC trans.def emitter for SOC.
 
 Reads H-wave's Wannier90-like ``Transfer.dat`` (SOI-packed ``iWan/jWan``
 indices ``2 * a_phys + spin + 1``) and emits mVMC's real-space
@@ -17,56 +17,11 @@ displacement ``+R`` as
 
 Thus the site endpoints remain ``i -> i+R``, while the spin endpoints are
 swapped and the coefficient is conjugated and negated. On a real
-spin-diagonal entry the spin swap is a no-op and the rule reduces to the
-previous ``trans = -v`` behaviour.
+spin-diagonal entry the spin swap is a no-op and the rule reduces to
+``trans = -v``.
 
-The v3.6 x/y Rashba fixtures did not expose the former off-diagonal ``+v``
-rule because their paired spin matrices satisfy
-``v[t,s] = -conj(v[s,t])`` at fixed ``R``. For those matrices, swapping the
-spin endpoints and emitting ``-conj(v)`` produces the same emitted matrix as
-the old rule.
-
-Compatibility with v3.6 is **matrix equivalence, not byte identity**. On the
-v3.6 shipping fixture ``case_soc_rashba_2d_sub_apbc`` the assembled matrix is
-identical to the old rule's (max element difference exactly 0.0, same key
-set), and the v3.6 seven-gate E2E passes unchanged. The emitted *text*
-differs on 368 of 389 lines: off-diagonal rows carry swapped spin labels in
-columns 2 and 4 (the partner row supplies the transposed entry, so the sum is
-unchanged), and some spin-diagonal rows print ``0.000000000000000`` where the
-old rule printed ``-0.000000000000000``. Any consumer that checksums or diffs
-``trans.def`` as text will therefore observe a change; any consumer that
-parses it into a Hamiltonian will not.
-
-Numerical reconstruction from all 128 saved v3.7 H-wave eigenpairs gives the
-following comparison against H-wave's reconstructed bare ``K``:
-
-- Former rule: maximum absolute delta ``6.0e-1``; 256 entries above
-  ``1e-10``.
-- Endpoint-swap plus conjugation rule: maximum absolute delta
-  ``1.1377010444899192e-12``; 0 entries above ``1e-10``.
-
-Verification scope
-------------------
-- ``case_soc_rashba_2d_nosub`` (SubShape [1, 1, 1] + SOC): the emitted
-  ``trans.def`` matches ComplexUHF's SCF at 4.4e-8%. The general rule is
-  matrix-equivalent to the former rule for this x/y Rashba fixture. Verified.
-- ``case_soc_rashba_2d_nosub_apbc`` (SubShape [1, 1, 1] + SOC + APBC):
-  end-to-end match at VMC precision. The APBC phase is real and the x/y
-  Rashba matrix is likewise unchanged by the general mapping. Verified.
-- ``case_soc_rashba_2d_sub`` (SubShape [2, 2, 1] + SOC): the emitted
-  ``trans.def`` matches ComplexUHF at ~0.15% (ComplexUHF from
-  random init converges to E=-25.14 vs H-wave -25.10 on the same
-  trans.def). The general rule emits the same x/y Rashba matrix for this
-  fixture. The reason the E2E energy compare
-  is skipped for this case is a separate bug on the
-  ``build_slater_orbitals`` (WF construction) path under SOC +
-  SubShape > [1, 1, 1] — the emitted ``zqp_orbital_uhfk.dat`` encodes
-  a Slater whose diagonal density matches H-wave's ``green_sublattice``
-  but whose off-diagonal cross-spin entries are wrong, so mVMC's
-  ``<H>`` on that WF disagrees with H-wave's ``Energy_Total`` by ~17.
-  See ``docs/superpowers/specs/2026-07-01-uhfk-mvmc-pairproduct-general-v31-design.md``
-  §3.8 and the SOC + SubShape > 1 note in
-  ``tests/validation/uhfk_mvmc_pairproduct/run.sh``.
+See docs/en/source/algorithm/uhfk_to_mvmc.rst for the mapping derivation,
+Hermiticity convention, and boundary-wrap composition.
 """
 from __future__ import annotations
 
@@ -82,7 +37,7 @@ class TransEmitError(ValueError):
 def _unpack_soi(iWan: int) -> tuple[int, int]:
     """Inverse of ``emit_rashba_transfer._pack_index``: ``iWan = 2 * a + s + 1``.
 
-    Returns ``(a_phys, spin)``. Under v3.1 scope (``norb_orig = 1``),
+    Returns ``(a_phys, spin)``. With ``norb_orig = 1``,
     ``a_phys`` is always ``0`` and ``spin`` is ``{0, 1}``.
     """
     if iWan < 1:
@@ -286,7 +241,9 @@ def emit_trans_def(
     ------
     TransEmitError
         On malformed input or unsupported SOI unpacking (e.g. a physical
-        orbital index != 0 under v3.1's single-orbital scope).
+        orbital index != 0 under the single-orbital constraint).
+
+    See docs/en/source/algorithm/uhfk_to_mvmc.rst for the Transfer mapping.
     """
     entries = parse_hwave_transfer(transfer_path)
     emit_trans_def_from_entries(
@@ -311,14 +268,15 @@ def emit_trans_def_from_entries(
     validate_trans_def_entries(entries, cell_shape)
     Lx, Ly, Lz = (int(c) for c in cell_shape)
 
-    # v3.2 spec §3.8 (SOC + APBC): compose per-row wrap phase for
+    # For SOC + APBC, compose the per-row wrap phase for
     # boundary-crossing bonds. ``inverse_gauge_phase(r_j_wrapped,
     # r_j_unwrapped, theta, L)`` evaluates to
     # ``exp(i * theta . (r_j_wrapped - r_j_unwrapped) / L)`` which
     # equals ``(-1)^wraps_d`` in each AP direction (theta_d = pi and
     # ``r_j_unwrapped - r_j_wrapped`` a multiple of L_d in that
     # direction, with the wrap count as the multiplier). Non-wrapping
-    # bonds land on ``exp(0) = 1`` and are unchanged.
+    # bonds land on ``exp(0) = 1`` and are unchanged. See
+    # docs/en/source/algorithm/uhfk_to_mvmc.rst.
     if boundary_theta is not None and np.any(
         np.abs(np.asarray(boundary_theta, dtype=np.float64)) > 1e-12
     ):
@@ -401,10 +359,10 @@ def validate_trans_def_entries(entries, cell_shape):
     for _rx, _ry, _rz, iWan, jWan, _val in entries:
         a_src, _s_src = _unpack_soi(iWan)
         a_tgt, _s_tgt = _unpack_soi(jWan)
-        # v3.1 spec §1 scope: single physical orbital per site.
+        # Require one physical orbital per site.
         if a_src != 0 or a_tgt != 0:
             raise TransEmitError(
-                f"trans_emit assumes norb_orig == 1 (v3.1); got "
+                f"trans_emit requires norb_orig == 1; got "
                 f"iWan={iWan} -> a_src={a_src}, jWan={jWan} -> "
                 f"a_tgt={a_tgt}"
             )

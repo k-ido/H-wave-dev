@@ -444,7 +444,7 @@ echo "  vmc.out -> ${MVMC_WORK}/${OUT_FILE}"
 if [[ "${CASE}" == "case_soc_rashba_2d_sub_apbc" ]] || \
    [[ "${CASE}" == case_soc_rashba_3d_sub_apbc_* ]]; then
 
-  # Phase 5 static/live gates are v3.7-only.
+  # Static/live gates apply to the 3D APBC cases.
   PHASE5_EXPECTED_MASK=""
   case "${CASE}" in
     case_soc_rashba_3d_sub_apbc_xy)
@@ -460,7 +460,7 @@ if [[ "${CASE}" == "case_soc_rashba_2d_sub_apbc" ]] || \
       PHASE5_EXPECTED_MASK="1, 1, 1"
       ;;
     case_soc_rashba_3d_sub_apbc_*)
-      echo "ERROR: unknown v3.7 case name '${CASE}'; define PHASE5_EXPECTED_MASK" >&2
+      echo "ERROR: unknown case name '${CASE}'; define PHASE5_EXPECTED_MASK" >&2
       echo "for this case before enabling it." >&2
       exit 1
       ;;
@@ -676,7 +676,7 @@ if [[ "${CASE}" == "case_soc_rashba_2d_sub_apbc" ]] || \
         bash "${COMPLEXUHF_CASE}/complexuhf_modpara_override.txt"
         ;;
       case_soc_rashba_3d_sub_apbc_*)
-        # The committed v3.7 modpara.def is authoritative.
+        # The committed modpara.def is authoritative.
         ;;
       *)
         echo "ERROR: unsupported ComplexUHF override case: ${CASE}" >&2
@@ -735,12 +735,12 @@ sys.stdout.write(result.stdout)
 sys.stderr.write(result.stderr)
 PY
       then
-        echo "Phase 5 gated ComplexUHF run failed (gate check or solver); tail uhf.log:" >&2
+        echo "Gated ComplexUHF run failed (gate check or solver); tail uhf.log:" >&2
         tail -50 uhf.log >&2
         exit 1
       fi
     else
-      # Preserve the established v3.6 launch path byte-for-byte.
+      # Preserve the established launch path byte-for-byte.
       run_native "${UHF}" namelist.def > uhf.log 2>&1 || {
         echo "ComplexUHF UHF failed; tail uhf.log:" >&2
         tail -50 uhf.log >&2

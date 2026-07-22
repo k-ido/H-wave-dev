@@ -1,23 +1,25 @@
-"""v3.6 Phase 1a helpers: parse emitted bridge output into F, project F to
+"""Parse emitted bridge output into F and project F to
 one-body density G under Slater-form assumption.
 
 Two callables, both pinned by the seven-gate contract:
 
-- ``parse_emitted_F(workspace)`` (spec §5.2 pseudocode): reads
+- ``parse_emitted_F(workspace)`` reads
   ``${workspace}/{namelist.def, orbitalidx_general.def, zqp_orbital_uhfk.dat}``
   and reconstructs the ``(2*Nsite, 2*Nsite)`` complex antisymmetric F matrix
   that mVMC's ``InOrbitalGeneral`` reader materializes. Nsite is authoritative
   from ``namelist.def`` (via the ``ModPara`` reference) and cross-checked
   against the site range in ``orbitalidx_general.def``.
 
-- ``pair_product_density_from_F(F, N_pairs, rank_tol=None)`` (spec §5.4):
+- ``pair_product_density_from_F(F, N_pairs, rank_tol=None)`` uses a
   skew-SVD projector returning the one-body density
   ``G[i, j] = <c^dag_i c_j>`` under H-wave / bridge convention
   ``G = conj(A) @ A.T``. Uses ``np.linalg.svd``; top ``2 * N_pairs`` left-
   singular vectors span the occupied subspace.
 
-Both functions are consumed by the G0-writer-check and G2a-emitted-F gates
-(spec §1.4 and §6.2); they must NOT be substituted with alternate helpers.
+Both functions are consumed by the G0-writer-check and G2a-emitted-F gates;
+they must NOT be substituted with alternate helpers. See
+docs/en/source/algorithm/uhfk_to_mvmc.rst for the construction and
+docs/en/source/uhfk/tools/uhfk_to_mvmc.rst for the validation gates.
 """
 from __future__ import annotations
 
@@ -221,11 +223,12 @@ def parse_emitted_F(workspace):
     Reads:
     - ``${workspace}/namelist.def`` (with ``ModPara <path>`` referring to a
       modpara-style file that contains ``Nsite <N>``)
-    - ``${workspace}/orbitalidx_general.def`` (v3 InOrbitalGeneral, 6-column
+    - ``${workspace}/orbitalidx_general.def`` (InOrbitalGeneral, 6-column
       mapping rows ``i spn_i j spn_j class_idx sign``)
     - ``${workspace}/zqp_orbital_uhfk.dat`` (``<idx> <re> <im>`` rows)
 
-    Normative reconstruction (spec §5.2):
+    Normative reconstruction (see
+    docs/en/source/algorithm/uhfk_to_mvmc.rst):
 
     ::
 
@@ -245,7 +248,7 @@ def parse_emitted_F(workspace):
         assert np.allclose(F, -F.T, atol=1e-12)
         return F
 
-    Contract-pinned choices (any deviation is out of contract per spec §5.2):
+    Contract-pinned choices:
 
     - Spin-block ordering ``all_i = i + spn_i * Nsite`` (NOT site-major
       ``all_i = 2*i + spn_i``).
@@ -283,7 +286,7 @@ def parse_emitted_F(workspace):
         val = sign * params[class_idx]
         F[all_i, all_j] = val
         F[all_j, all_i] = -val
-    # Antisymmetry assert per spec pseudocode.
+    # Enforce the documented antisymmetry contract.
     if not np.allclose(F, -F.T, atol=1e-12):
         raise NamelistFormatError(
             "parse_emitted_F: reconstructed F failed antisymmetry check "
@@ -301,8 +304,8 @@ def pair_product_density_from_F(F, N_pairs, rank_tol=None):
     F has rank ``2 * N_pairs`` and decomposes as ``F = A Omega A^T`` where
     ``A`` has orthonormal columns and ``Omega = block_diag([[0,I_N],[-I_N,0]])``.
 
-    Convention (spec §5.4, matching H-wave / bridge ``compare_against_green_
-    sublattice`` which uses ``conj(A) @ A.T``):
+    Convention (matching H-wave / bridge ``compare_against_green_sublattice``
+    which uses ``conj(A) @ A.T``):
 
     ::
 
@@ -313,7 +316,7 @@ def pair_product_density_from_F(F, N_pairs, rank_tol=None):
     Hermitian G) — that is the WRONG convention for complex SOC densities
     where off-diagonal cross-spin entries have non-zero imaginary parts.
 
-    Algorithm (spec §5.4 pinned pseudocode):
+    Algorithm (see docs/en/source/algorithm/uhfk_to_mvmc.rst):
 
     ::
 
@@ -330,9 +333,9 @@ def pair_product_density_from_F(F, N_pairs, rank_tol=None):
             U_occ = U[:, :2 * N_pairs]
             return np.conj(U_occ) @ U_occ.T
 
-    ``rank_tol`` policy (spec §5.4):
+    ``rank_tol`` policy:
 
-    - Zero-noise inputs (Phase 3 zero-noise snapshot, hand-computed synthetic):
+    - Zero-noise inputs (snapshot or hand-computed synthetic):
       ``rank_tol = 1e-10``.
     - Shipping inputs with ``--epsilon-noise 1e-8``: ``rank_tol = 1e-6``.
     """

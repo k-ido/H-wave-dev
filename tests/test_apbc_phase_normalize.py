@@ -46,12 +46,15 @@ def test_rejects_wrong_length():
 
 
 def test_boundary_theta_is_radians_not_twist_offset():
-    """v3.6 spec §2.4 unit contract: ``normalize_boundary_condition`` MUST
+    """``normalize_boundary_condition`` MUST
     return radians (`0` or `pi`), NOT the dimensionless
     ``twist_offset = theta / (2*pi)`` (which would be `0` or `0.5`). This
     pin blocks a bridge implementation that accidentally passes
     ``eigen.npz["twist_offset"]`` into ``gauge_lift(boundary_theta=...)``
-    and produces silently wrong APBC densities."""
+    and produces silently wrong APBC densities.
+
+    See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
+    """
     from hwave.solver._apbc_phase import twist_offset
 
     theta = normalize_boundary_condition(["antiperiodic", "periodic", "periodic"])

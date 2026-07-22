@@ -1,10 +1,11 @@
 """(k, -k) partner index lookup against H-wave UHFk wavevector_index.
 
-Spec section 3.3: H-wave emits wavevector_index in signed integer form
+H-wave emits wavevector_index in signed integer form
 (_klist convention: np.roll(np.arange(n) - n//2, -(n//2))). The partner
 of row n is the row whose emitted index m satisfies
     m ≡ -n - 2 * twist_offset_d (mod L_d)
-per direction d. Self-pair: m_d ≡ n_d for all d.
+per direction d. Self-pair: m_d ≡ n_d for all d. See
+docs/en/source/algorithm/uhfk_to_mvmc.rst.
 """
 from __future__ import annotations
 

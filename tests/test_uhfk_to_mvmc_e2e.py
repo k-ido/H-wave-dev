@@ -221,8 +221,8 @@ def test_e2e_apbc_case_1d_hubbard_density_check_passes():
 def test_e2e_apbc_subshape_2_density_check_passes():
     """APBC L=8 SubShape=[2,1,1] Ncond=4: bridge --check-density.
 
-    Codex adversarial-review v2: exercises the folded-eigen + unfold
-    path against H-wave's greenone.dat at 1e-10.
+    Exercises the folded-eigen and unfold path against H-wave's
+    greenone.dat at 1e-10.
     """
     work = _run_hwave(
         FIXTURE,

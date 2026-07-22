@@ -1,7 +1,7 @@
-"""Wiring tests for the v3.6 seven-gate dispatcher in
+"""Wiring tests for the seven-gate dispatcher in
 ``tests/validation/uhfk_mvmc_pairproduct/compare.py``.
 
-Spec §5.3b: the compare.py dispatcher MUST enforce:
+The compare.py dispatcher MUST enforce:
   - EXPECTED_MODE_DISPATCH is a deep-frozen reference table.
   - MODE_DISPATCH is a mutable copy compared structurally against
     EXPECTED_MODE_DISPATCH before every mode.
@@ -9,8 +9,8 @@ Spec §5.3b: the compare.py dispatcher MUST enforce:
     resolved object's __module__ / __qualname__ MUST match the table.
   - Any integrity failure exits code 2 BEFORE any PASS line.
 
-These tests target the dispatch framework itself; end-to-end physics
-gates land in Phase 6 (the mode dispatchers here are Phase 1 stubs).
+These tests target the dispatch framework itself. See
+``docs/en/source/uhfk/tools/uhfk_to_mvmc.rst`` for the validation contract.
 """
 from __future__ import annotations
 
@@ -193,7 +193,7 @@ def test_validate_dispatch_helper_missing_exits_2(compare_mod, capsys):
 def test_validate_dispatch_same_qualname_wrong_module_exits_2(
     compare_mod, capsys
 ):
-    """Codex Rev.22 adversarial case: a stub module exposes the same
+    """A stub module exposes the same
     qualname the table expects but from a hostile module path. The
     obj.__module__ check MUST fire exit 2."""
     stub = types.ModuleType("_wiring_stub_wrong_module_")
@@ -454,9 +454,9 @@ def _write_minimal_g2b_workspace(root, Ns=2):
         "=============================================\n"
         "0 0 0 0 1.0e-3 0.0\n"
     )
-    # ComplexUHF density (all zeros, matches the sentinel's zero
-    # output). The strict Codex re-review 2026-07-12 parser requires
-    # exactly (2*Ns)^2 = 16 (i, s, j, t) rows for Ns = 2.
+    # ComplexUHF density (all zeros, matching the sentinel's output).
+    # The strict parser requires exactly (2*Ns)^2 = 16 (i, s, j, t)
+    # rows for Ns = 2.
     with open(complexuhf / "zvo_UHF_cisajs.dat", "w") as fp:
         for i in range(Ns):
             for s in (0, 1):
@@ -476,9 +476,8 @@ def test_compare_g2b_dispatch_invokes_canonical_gauge_lift(
     sentinel was invoked (via a side-effect counter) AND the emitted
     PASS record still carries the canonical helper= from the table.
 
-    Hardened per Codex adversarial-review 2026-07-12: the real G2b
-    dispatcher performs actual artefact I/O + numeric comparison, so
-    the wiring test provides a minimal synthetic workspace whose
+    The real G2b dispatcher performs actual artefact I/O and numeric
+    comparison, so the wiring test provides a minimal synthetic workspace whose
     gauge-lifted density is defined by the sentinel and whose
     ComplexUHF reference is zero. The test therefore still isolates
     the dispatch metadata contract from the numerical physics."""
@@ -615,7 +614,7 @@ def test_compare_g3_rejects_non_finite_mvmc_energy(
 
 
 def test_legacy_positional_args_still_work(compare_mod, tmp_path, capsys):
-    """The v3.5 3-positional-arg invocation MUST continue to work for
+    """The 3-positional-arg invocation MUST continue to work for
     existing PBC / APBC fixtures (backward compat)."""
     hwave = tmp_path / "energy.dat"
     hwave.write_text("Energy_Total = -1.0\n")
@@ -630,10 +629,9 @@ def test_legacy_positional_args_still_work(compare_mod, tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------
-# Codex re-review 2026-07-12 finding 2 pins: ComplexUHF parser MUST
-# fail closed on empty / partial / duplicate / out-of-range / malformed
-# / non-finite input. Pre-hardening the parser silently returned zeros
-# for an empty file, giving spurious G2a/G2b PASS on empty artifacts.
+# The ComplexUHF parser must fail closed on empty, partial, duplicate,
+# out-of-range, malformed, or non-finite input. Returning zeros for an
+# empty file would give spurious G2a/G2b PASS records.
 # ---------------------------------------------------------------------
 
 

@@ -89,7 +89,7 @@ def test_twist_offset_antiperiodic_half():
     assert tuple(twist_offset([np.pi, 0.0, np.pi])) == (0.5, 0.0, 0.5)
 
 
-# ---- sublattice helpers (v2: sublattice + APBC) -----------------------------
+# ---- sublattice helpers (sublattice + APBC) ---------------------------------
 
 
 def _hwave_encode_orbit(orig_orb, bx, by, bz, norb_orig, Bx, By, Bz, spin=0):
@@ -139,7 +139,7 @@ def test_sublattice_offset_roundtrip_spin_orbital_strips_spin(
 
 
 def test_full_lattice_displacement_subshape_111_matches_irvec():
-    """v1 case: SubShape = [1, 1, 1] -> Delta = irvec (no sublattice offset)."""
+    """With SubShape = [1, 1, 1], Delta = irvec (no sublattice offset)."""
     # Only one sublattice site (0, 0, 0), so alpha = beta = 0 with norb_orig = 1.
     delta = full_lattice_displacement(
         irvec=(1, -1, 0), alpha=0, beta=0, norb_orig=1, subshape=(1, 1, 1)

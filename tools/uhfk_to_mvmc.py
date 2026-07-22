@@ -1,6 +1,7 @@
 """H-wave UHFk → mVMC PairProduct (AntiParallel Slater) bridge CLI.
 
-Spec: docs/superpowers/specs/2026-06-30-uhfk-mvmc-pairproduct-bridge-design.md
+See docs/en/source/algorithm/uhfk_to_mvmc.rst for the construction and
+docs/en/source/uhfk/tools/uhfk_to_mvmc.rst for usage.
 """
 from __future__ import annotations
 
@@ -42,12 +43,13 @@ from tools._uhfk_to_mvmc.boundary_input import (
 
 def _debug_dump_writer_frames(args, F_pre_noise, params, mapping):
     """Under --debug-writer, dump F_pre_noise.npz and F_post_aggregate.npz
-    next to --output for the v3.6 G0-writer-check gate (spec §1.4).
+    next to --output for the G0-writer-check gate.
 
     F_pre_noise: F built by build_fij_general(A) before rank-lift noise.
     F_post_aggregate: F reconstructed from (mapping, params) using the
         same algorithm parse_emitted_F applies to the emitted zqp file.
         Under --epsilon-noise 0 the two are numerically identical.
+    See docs/en/source/uhfk/tools/uhfk_to_mvmc.rst.
     """
     if not getattr(args, "debug_writer", False):
         return
@@ -155,7 +157,7 @@ def main(argv=None):
         "--rng-seed", type=int, default=7919,
         help="Seed for the noise RNG (default: 7919, reproducible).",
     )
-    # v3.6 spec §1.4 G0-writer-check producer contract: when set, dump
+    # The G0-writer-check producer contract dumps
     # F_pre_noise.npz (in-memory F before rank-lift noise, i.e. the F built
     # by build_fij_general(A)) and F_post_aggregate.npz (F reconstructed
     # from the mapping + params returned by aggregate_general_orbital_params,
@@ -164,18 +166,18 @@ def main(argv=None):
     # dumps MUST be identical; the G0 test asserts this. Under the shipping
     # 1e-8 rank-lift, F_post_aggregate carries the intentional noise while
     # F_pre_noise stays clean. Only the General path emits these dumps;
-    # the AntiParallel path is v1 (out of v3.6 gate scope) and ignores the
-    # flag.
+    # the AntiParallel path ignores the flag. See
+    # docs/en/source/uhfk/tools/uhfk_to_mvmc.rst.
     parser.add_argument(
         "--debug-writer", dest="debug_writer", action="store_true",
         default=False,
         help=(
             "Dump F_pre_noise.npz and F_post_aggregate.npz next to "
-            "--output. Enables the v3.6 G0-writer-check gate. See spec "
-            "§1.4."
+            "--output for the G0-writer-check gate. See "
+            "docs/en/source/uhfk/tools/uhfk_to_mvmc.rst."
         ),
     )
-    # v3.1 spec §3.8: SOC path additionally emits mVMC trans.def from
+    # The SOC path additionally emits mVMC trans.def from
     # H-wave Transfer.dat because StdFace's HubbardGC generator drops
     # Rashba s != t entries. Non-SOC path leaves vmcdry's trans.def
     # untouched, so both flags default to None and are ignored unless
@@ -196,10 +198,10 @@ def main(argv=None):
             "file layout at this location."
         ),
     )
-    # v3.2 spec §1: under SOC + SubShape > [1, 1, 1] StdFace's
+    # Under SOC + SubShape > [1, 1, 1], StdFace's
     # orbitalidxgen.def over-groups pair classes (assumes full-lattice
     # translation invariance, which SOC breaks under sublattice folding),
-    # so the class-consistency guard (spec §4.3) fires with residuals of
+    # so the class-consistency guard fires with residuals of
     # order 1e-1. The bridge emits its own all-unique-classes
     # orbitalidxgen.def to this path and uses it in place of the caller-
     # supplied --orbitalidx for the F aggregation. Required under
@@ -235,14 +237,8 @@ def main(argv=None):
     except (BoundaryInputError, ValueError) as e:
         print(f"ERROR (boundary): {e}", file=sys.stderr)
         return 2
-    # v3.1 (spec §3.1): SOC dispatch flag. The v1 blanket reject is
-    # replaced by the 6-case dispatch matrix below. SOC+APBC is fail-fast
-    # right after boundary/eigen-twist canonicalization; SOC+antiparallel
-    # is fail-fast at the dispatch decision. The --transfer / --emit-trans
-    # required-args check for is_soc_mode lives inside the General branch
-    # (spec §3.8): SOC+APBC and SOC+antiparallel reject before the emitter
-    # is ever invoked, so those pre-dispatch rejects fire on their own
-    # dedicated messages rather than a shared "missing --transfer" one.
+    # The SOC dispatch flag participates in the six-case path selection
+    # documented in docs/en/source/uhfk/tools/uhfk_to_mvmc.rst.
     is_soc_mode = bool(toml_param.get("enable_spin_orbital", False))
 
     cell_shape_arr = np.array(cell_shape, dtype=np.int64)
@@ -258,7 +254,7 @@ def main(argv=None):
     subvol = int(np.prod(subshape_arr))
 
     ne_per_group = derive_ne_per_group(toml_param)
-    # v3: N_up != N_down is legal for the General path (2Sz>0 A case).
+    # N_up != N_down is legal for the General path (2Sz>0 A case).
     # The strict AntiParallel check is deferred to the AntiParallel
     # branch below so the General dispatch can service Sz-imbalanced UHF.
 
@@ -266,15 +262,14 @@ def main(argv=None):
     has_apbc = bool(np.any(np.abs(theta - np.pi) < 1e-12))
     # L passed to build_amplitudes / partner_index is the folded lattice
     # size (partner rows are computed on the folded BZ). CellShape is
-    # preserved separately for the unfold path (spec §3.3).
+    # preserved separately for the unfold path; see
+    # docs/en/source/algorithm/uhfk_to_mvmc.rst.
     L = L_folded_arr
 
-    # v3.7 §8: the SOC + APBC + SubShape allowlist predicate depends only
+    # The SOC + APBC + SubShape allowlist predicate depends only
     # on (theta, sub_shape, cell_shape, is_soc_mode), all already known
     # from input.toml at this point, so it runs here as a genuine
-    # pre-dispatch gate -- before eigen.npz is loaded -- rather than
-    # after. See the historical v3.2 -> v3.6 evolution notes further
-    # below (kept in place for context) for why this reject exists.
+    # pre-dispatch gate before eigen.npz is loaded.
     from tools._uhfk_to_mvmc.allowlist_predicate import (
         is_supported_triple, REJECT_MESSAGE,
     )
@@ -291,54 +286,20 @@ def main(argv=None):
     except BoundaryInputError as e:
         print(f"ERROR (eigen twist): {e}", file=sys.stderr)
         return 2
-    # v3.2 (spec §3.8): SOC + APBC is validated end-to-end via
+    # SOC + APBC is handled by
     # ``emit_trans_def(boundary_theta=...)`` which applies the physical
     # wrap-phase to boundary-crossing rows so mVMC's ``H = -sum trans``
-    # recovers the physical Hamiltonian on the periodic-site frame.
-    # The prior v3.1 deferred reject is removed here.
+    # recovers the physical Hamiltonian on the periodic-site frame. See
+    # docs/en/source/algorithm/uhfk_to_mvmc.rst.
     is_soc_sublattice_mode = is_soc_mode and any(
         int(s) != 1 for s in sub_shape
     )
-    # v3.5 Phase D lift (2026-07-05): the v3.4 Rev.2 pre-dispatch reject
-    # for SOC + SubShape > [1, 1, 1] has been removed. The v3.5 density
-    # gate below now invokes
-    # ``compare_against_green_sublattice(is_soc_sublattice_mode=True)``,
-    # which lifts H-wave's ``green_sublattice`` to the physical basis via
-    # ``gauge_lift`` and validates the SHIPPING ``conj(A) @ A.T`` directly
-    # at 1e-10. This closes the "dual-A" gap flagged by Codex v3.4 Rev.2
-    # (the previous gate validated a "reference A" that dropped
-    # ``sub_offset``, not the shipping A). See
-    # docs/superpowers/specs/2026-07-05-uhfk-mvmc-pairproduct-general-v35-design.md
-    # §2-3 for the gauge derivation and §6.2b for the adversarial
-    # negative-regression test that pins the gate's independence from the
-    # shipping-A convention.
-    #
-    # v3.4 Rev.1 finding 2 defer (still in effect at v3.5): SOC + APBC +
-    # SubShape > [1, 1, 1] is the composed triple combination and remains
-    # UNVALIDATED. Only its two-way subsets are covered by fixtures:
-    #   - case_soc_rashba_2d_nosub_apbc: SOC + APBC (SubShape = [1,1,1]),
-    #     0.03% mVMC vs H-wave delta.
-    #   - case_soc_rashba_2d_sub: SOC + SubShape (PBC), 0.22% delta.
-    # The composed SOC+APBC+SubShape phase path has no fixture and no
-    # end-to-end validation, so we fail-fast pre-dispatch. When a future
-    # spec adds a SOC+APBC+SubShape fixture and empirical <H> validation,
-    # remove this guard (v3.6+, see §8 non-goals).
-    # v3.6 spec §8 narrowed reject (spec docs/superpowers/specs/
-    # 2026-07-09-uhfk-mvmc-pairproduct-general-v36-design.md): single-
-    # direction APBC + SOC + SubShape > 1 is SHIPPING under v3.6, covered
-    # by case_soc_rashba_2d_sub_apbc. Multi-direction APBC + SOC +
-    # SubShape > 1 (AP-AP-P, AP-AP-AP) still lacks a fixture / gate and
-    # remains rejected pre-dispatch until v3.7 lands the multi-direction
-    # gauge composition + fixture. The narrower reject is deliberately
-    # scoped so a nested / unusual layout produces a clean fail-fast
-    # rather than a silent wrong-file selection downstream.
-    # v3.7 §8: the above narrowed reject is replaced by an explicit
-    # allowlist of (apbc_mask, sub_shape, cell_shape) triples (v3.6's
-    # shipping shape + v3.7's shipping shape). The check itself now runs
-    # earlier -- immediately after CellShape/SubShape/BoundaryCondition
-    # parsing, before eigen.npz is loaded -- via
-    # ``tools._uhfk_to_mvmc.allowlist_predicate.is_supported_triple``.
-    # See that call above, near ``L = L_folded_arr``.
+    # For SOC + SubShape > [1, 1, 1], the density gate lifts
+    # ``green_sublattice`` to the physical basis via ``gauge_lift`` and
+    # validates the emitted ``conj(A) @ A.T`` directly at 1e-10. Supported
+    # SOC + APBC + SubShape combinations are checked by the allowlist above.
+    # See docs/en/source/algorithm/uhfk_to_mvmc.rst and
+    # docs/en/source/uhfk/tools/uhfk_to_mvmc.rst.
     eigenvalue = eigen["eigenvalue"]
     eigenvector = eigen["eigenvector"]
     wavevector_index = eigen["wavevector_index"]
@@ -349,7 +310,8 @@ def main(argv=None):
     column_mu_group = occ["column_mu_group"]
     T_scf = float(occ["T"])
 
-    # v3 dispatch (spec §5.3): format-first + is_antiparallel_metadata tuple.
+    # Format-first dispatch uses the is_antiparallel_metadata tuple; see
+    # docs/en/source/uhfk/tools/uhfk_to_mvmc.rst.
     from tools._uhfk_to_mvmc.orbitalidx_general_reader import (
         detect_orbitalidx_format,
         parse_orbitalidx_general_def,
@@ -386,16 +348,16 @@ def main(argv=None):
         and _column_spin_to_mu_group_is_bijective(column_spin, column_mu_group)
     )
 
-    # v3.1 dispatch (spec §3.1): 6-case matrix over
+    # Six-case dispatch matrix over
     #   (is_antiparallel_metadata, orbitalidx_format, is_soc_mode).
     #
     # | is_ap_meta | orbitalidx_format | is_soc_mode | Path             |
     # |------------|-------------------|-------------|------------------|
-    # | True       | antiparallel      | False       | v2.1 AntiParallel|
-    # | True       | general           | False       | v3 forced-General|
-    # | False      | general           | False       | v3 General (A/B) |
+    # | True       | antiparallel      | False       | AntiParallel     |
+    # | True       | general           | False       | forced-General   |
+    # | False      | general           | False       | General (A/B)    |
     # | False      | antiparallel      | False       | reject           |
-    # | *          | general           | True        | v3.1 General-SOC |
+    # | *          | general           | True        | General-SOC      |
     # | *          | antiparallel      | True        | reject (6-col)   |
     if is_soc_mode and orbitalidx_format == "antiparallel":
         print(
@@ -409,22 +371,22 @@ def main(argv=None):
         return 2
 
     if is_antiparallel_metadata and orbitalidx_format == "antiparallel":
-        # Fall through to the legacy v2.1 path below (unchanged). The
-        # v1 spec §7 AntiParallel Sz-fixed sector constraint is enforced
-        # here (it was pre-dispatch before v3 dispatch was introduced).
+        # Fall through to the AntiParallel path. Enforce its Sz-fixed
+        # sector constraint here.
         if ne_per_group[0] != ne_per_group[1]:
             print(
                 f"ERROR: N_up = {ne_per_group[0]} != N_down = "
-                f"{ne_per_group[1]}; v1 spec section 7 requires "
-                "AntiParallel Sz-fixed sector",
+                f"{ne_per_group[1]}; AntiParallel requires N_up == N_down. "
+                "Use 6-column orbitalidx_general.def for a spin-imbalanced "
+                "input",
                 file=sys.stderr,
             )
             return 2
     elif orbitalidx_format == "general":
-        # v3 General path (also serves the forced-General branch when
+        # General path (also serves the forced-General branch when
         # is_antiparallel_metadata is True).
         transfer_entries = None
-        # v3.1 spec §3.8: SOC path requires --transfer / --emit-trans
+        # The SOC path requires --transfer / --emit-trans
         # (the emitter runs after zqp_orbital_uhfk.dat is written; check
         # up-front so the caller catches missing args before any expensive
         # I/O and before the output file exists on disk).
@@ -433,24 +395,24 @@ def main(argv=None):
         ):
             print(
                 "ERROR: enable_spin_orbital = true requires --transfer "
-                "and --emit-trans (v3.1 spec §3.8: vmcdry.out's "
+                "and --emit-trans because vmcdry.out's "
                 "FermionHubbardGC generator drops Rashba s != t transfer "
                 "entries; the bridge emits the SOC-preserving trans.def "
-                "from H-wave's Transfer.dat).",
+                "from H-wave's Transfer.dat.",
                 file=sys.stderr,
             )
             return 2
-        # v3.2 spec §1: SOC + SubShape > [1, 1, 1] requires the bridge to
+        # SOC + SubShape > [1, 1, 1] requires the bridge to
         # emit an all-unique-classes orbitalidxgen.def in place of
         # StdFace's over-grouped one; fail up-front when the caller
         # forgot the flag so the error surfaces before any I/O.
         if is_soc_sublattice_mode and args.emit_orbitalidx is None:
             print(
                 "ERROR: enable_spin_orbital = true + SubShape > [1, 1, 1] "
-                "requires --emit-orbitalidx (v3.2 spec §1: StdFace's "
+                "requires --emit-orbitalidx because StdFace's "
                 "orbitalidxgen.def over-groups pair classes under SOC + "
                 "sublattice folding; the bridge emits an all-unique-"
-                "classes replacement).",
+                "classes replacement.",
                 file=sys.stderr,
             )
             return 2
@@ -494,7 +456,8 @@ def main(argv=None):
         # Validate every SOC trans.def prerequisite before any producer can
         # write or overwrite orbital-index, debug, zqp, or trans artifacts.
         # The parsed entries are retained so emission uses exactly the values
-        # that passed Hermiticity and v3.1 scope validation.
+        # that passed Hermiticity and single-orbital validation. See
+        # docs/en/source/algorithm/uhfk_to_mvmc.rst.
         if is_soc_mode:
             for label, path in output_paths:
                 if os.path.isdir(path):
@@ -549,15 +512,16 @@ def main(argv=None):
                     file=sys.stderr,
                 )
                 return 2
-        # SOC path is no longer experimental (v3.2). trans_emit applies the
-        # negative-Bloch mapping by swapping spin endpoints and emitting
-        # -conj(v), with the boundary wrap phase composed afterward. See its
-        # module docstring for the derivation and verification scope.
+        # trans_emit applies the negative-Bloch mapping by swapping spin
+        # endpoints and emitting -conj(v), with the boundary wrap phase
+        # composed afterward. See
+        # docs/en/source/algorithm/uhfk_to_mvmc.rst.
         _, site_R_int, norb = load_geometry_uhf(args.geometry)
         if norb != 1:
             print(
                 f"ERROR: geometry has norb={norb} orbitals per cell; "
-                "v3 general path requires single-orbital (norb_orig == 1)",
+                "the General path supports only one orbital per cell "
+                "(norb_orig == 1)",
                 file=sys.stderr,
             )
             return 2
@@ -565,7 +529,7 @@ def main(argv=None):
         if Ns != int(np.prod(cell_shape)):
             print(
                 f"ERROR: geometry has {Ns} sites but CellShape implies "
-                f"{int(np.prod(cell_shape))} (v3 single orbital)",
+                f"{int(np.prod(cell_shape))} (single orbital)",
                 file=sys.stderr,
             )
             return 2
@@ -584,7 +548,7 @@ def main(argv=None):
                 file=sys.stderr,
             )
             return 2
-        # v3 General path: derive ne_per_group from the actual
+        # General path: derive ne_per_group from the actual
         # column_mu_group shape rather than from the input toml's
         # Ncond/2Sz splitting. Rationale: under H-wave Sz-free
         # (no 2Sz key), the SCF uses a single global chemical potential,
@@ -622,14 +586,14 @@ def main(argv=None):
         except ValueError as e:
             print(f"ERROR (general prerequisites): {e}", file=sys.stderr)
             return 2
-        # v3.2 spec §1: under SOC + SubShape > [1, 1, 1] the bridge emits
+        # Under SOC + SubShape > [1, 1, 1], the bridge emits
         # its own all-unique-classes orbitalidxgen.def and uses it as the
         # effective mapping source (bypasses StdFace's class over-grouping
         # that would trip class-consistency in
         # aggregate_general_orbital_params). The E2E harness is responsible
         # for moving the emitted file over StdFace's version so mVMC also
         # consumes the same all-unique classes at InOrbitalGeneral read
-        # time.
+        # time. See docs/en/source/uhfk/tools/uhfk_to_mvmc.rst.
         if is_soc_sublattice_mode:
             from tools._uhfk_to_mvmc.orbitalidx_general_emitter import (
                 emit_orbitalidx_all_unique,
@@ -688,7 +652,7 @@ def main(argv=None):
             complex_type=info_general["complex_type"],
             rng=np.random.default_rng(args.rng_seed),
         )
-        # v3.6 G0-writer-check producer step. `_debug_dump_writer_frames`
+        # G0-writer-check producer step. `_debug_dump_writer_frames`
         # is a no-op unless --debug-writer is set.
         _debug_dump_writer_frames(
             args, F_general, params, info_general["mapping"],
@@ -701,28 +665,20 @@ def main(argv=None):
                 )
                 return 2
             G_all = np.conj(A) @ A.T
-            # v3.2 (spec §1 note): H-wave's greenone.dat has a known bug
+            # H-wave's greenone.dat is not used as the reference
             # under SOC + SubShape > [1, 1, 1] (a downstream fold path
             # returns wrong values while ``green.npz['green_sublattice']``
-            # remains correct — being fixed on a separate H-wave branch,
-            # see memory/feedback_hwave_sublattice_green_testing.md).
+            # remains correct).
             # For this case route the density check through the folded
             # green_sublattice instead of greenone.dat. The green.npz
             # path is derived from the --eigen path (H-wave writes both
             # to the same output/ directory).
             if is_soc_sublattice_mode:
-                # v3.5 Phase C density gate for SOC + SubShape > [1, 1, 1].
-                # The v3.4 dual-A workaround (build a reference A without
-                # ``sub_offset`` for the density check while shipping a
-                # distinct A with ``sub_offset`` to mVMC) is retired: the
-                # v3.5 branch of ``compare_against_green_sublattice``
-                # LIFTS ``green_sublattice`` to the physical basis via
-                # ``gauge_lift`` and compares element-wise to the shipping
-                # ``conj(A) @ A.T`` (spec §3 v3.5 design). This gauge-
-                # invariant lift restores a strict full-element density
-                # gate at 1e-10 directly on the shipping A/F. Codex Rev.2
-                # concern (dual-A pattern hides shipping-A regressions)
-                # is resolved.
+                # The SOC + SubShape density gate lifts
+                # ``green_sublattice`` to the physical basis via
+                # ``gauge_lift`` and compares element-wise to the emitted
+                # ``conj(A) @ A.T`` at 1e-10. See
+                # docs/en/source/algorithm/uhfk_to_mvmc.rst.
                 from tools._uhfk_to_mvmc.density_check import (
                     compare_against_green_sublattice,
                 )
@@ -758,7 +714,7 @@ def main(argv=None):
                     return 3
                 print(
                     "density check OK (tol 1e-10; SOC+SubShape gauge-"
-                    "lifted green_sublattice, v3.5)"
+                    "lifted green_sublattice)"
                 )
             else:
                 try:
@@ -770,19 +726,10 @@ def main(argv=None):
                     print(f"ERROR (density check): {e}", file=sys.stderr)
                     return 3
                 print("density check OK (tol 1e-10)")
-        # Codex adversarial review (Rev.1, finding 3): under SOC, both
-        # zqp_orbital_uhfk.dat and trans.def must land atomically as a
-        # pair. A failure in emit_trans_def used to leave a stale zqp on
-        # disk with the pre-existing trans.def next to it, misleading a
-        # subsequent mVMC run. Both temps are committed via os.replace
-        # only after write_zqp_orbital_general AND emit_trans_def both
-        # succeed. Non-SOC path still goes through the same block; the
-        # trans temp is skipped because is_soc_mode is False.
-        #
-        # Codex Rev.2 finding 2: two os.replace calls are not truly atomic
-        # (a failure of the second commit leaves the first landed and
-        # would silently pair a fresh zqp with the previous trans.def).
-        # Preflight the SOC outputs so os.replace only fires against
+        # Under SOC, write zqp_orbital_uhfk.dat and trans.def to temporary
+        # files before committing either output. The non-SOC path uses the
+        # same block without a trans.def temporary file. Preflight the SOC
+        # outputs so os.replace only fires against
         # already-validated destinations: reject same-path collisions
         # (would silently overwrite each other), reject directory targets
         # (os.replace can't atomically overwrite a directory with a
@@ -820,12 +767,12 @@ def main(argv=None):
         try:
             write_zqp_orbital_general(tmp_path, params)
             if is_soc_mode:
-                # v3.1 spec §3.8: emit mVMC trans.def from H-wave
+                # Emit mVMC trans.def from H-wave
                 # Transfer.dat so SOC (Rashba s != t) entries survive
                 # into mVMC's Hamiltonian. Runs only under is_soc_mode
                 # because vmcdry.out already produces a correct
-                # spin-diagonal trans.def for non-SOC v3 A/B fixtures.
-                # v3.2: boundary_theta is threaded so APBC rows acquire
+                # spin-diagonal trans.def for non-SOC fixtures.
+                # boundary_theta is threaded so APBC rows acquire
                 # the wrap-phase sign flip at boundary crossings.
                 from tools._uhfk_to_mvmc.trans_emit import (
                     emit_trans_def_from_entries,
@@ -881,7 +828,8 @@ def main(argv=None):
     if norb != 1:
         print(
             f"ERROR: geometry has norb={norb} orbitals per cell; "
-            "v1 spec section 7 requires single-orbital (norb_orig == 1)",
+            "the AntiParallel path supports only one orbital per cell "
+            "(norb_orig == 1)",
             file=sys.stderr,
         )
         return 2
@@ -890,12 +838,12 @@ def main(argv=None):
     if Ns != int(np.prod(cell_shape)):
         print(
             f"ERROR: geometry has {Ns} sites but CellShape implies "
-            f"{int(np.prod(cell_shape))} (v1 single orbital)",
+            f"{int(np.prod(cell_shape))} (single orbital)",
             file=sys.stderr,
         )
         return 2
 
-    # Codex finding 4 (v2): eigen.npz must match the folded BZ shape
+    # eigen.npz must match the folded BZ shape
     # derived from CellShape / SubShape. If a caller passes a stale
     # SubShape that disagrees with H-wave's actual fold, refuse before
     # building amplitudes.
@@ -972,8 +920,7 @@ def main(argv=None):
     )
 
     # Density validation must run BEFORE writing the output file so a
-    # failed check never leaves a mVMC-readable artifact on disk (Codex
-    # adversarial review fix 2).
+    # failed check never leaves a mVMC-readable artifact on disk.
     if args.check_density:
         if args.onebodyg_uhf is None:
             print(

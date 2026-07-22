@@ -1,4 +1,4 @@
-"""Tests for orbitalidx_general_reader (v3 InOrbitalGeneral 6-column parser)."""
+"""Tests for orbitalidx_general_reader (InOrbitalGeneral 6-column parser)."""
 from __future__ import annotations
 
 import os
@@ -72,7 +72,7 @@ def test_detect_orbitalidx_format_general_6col():
 
 
 def test_detect_orbitalidx_format_antiparallel_3col():
-    """3-column body (PBC v2.1) → 'antiparallel'."""
+    """3-column PBC body maps to 'antiparallel'."""
     body = (
         "======================\n"
         "NOrbitalIdx  4\n"
@@ -88,7 +88,7 @@ def test_detect_orbitalidx_format_antiparallel_3col():
 
 
 def test_detect_orbitalidx_format_antiparallel_4col():
-    """4-column body (APBC v2.1) → 'antiparallel'."""
+    """4-column APBC body maps to 'antiparallel'."""
     body = (
         "======================\n"
         "NOrbitalIdx  4\n"

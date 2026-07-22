@@ -6,8 +6,8 @@ from hwave.solver._apbc_phase import normalize_boundary_condition
 
 
 def test_default_when_key_absent_is_all_periodic():
-    # Solver-side default (Task 3 will encode this); the helper itself
-    # always requires an explicit list. Document that the loader must
+    # The solver-side default is all-periodic; the helper itself always
+    # requires an explicit list. Document that the loader must
     # default to ["periodic"]*3 when the TOML key is absent.
     assert normalize_boundary_condition(["periodic"] * 3) == (0.0, 0.0, 0.0)
 

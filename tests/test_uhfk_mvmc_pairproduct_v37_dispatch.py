@@ -1,8 +1,8 @@
-"""v3.7 §8 CLI allowlist dispatch tests.
+"""CLI allowlist dispatch tests.
 
 Pins the CLI's shift from a blanket 'multi-direction APBC rejected'
-message to the frozenset-based allowlist that admits v3.6 shape +
-v3.7 shape while rejecting novel combinations.
+message to the frozenset-based allowlist that admits the supported lattice
+shapes while rejecting novel combinations.
 """
 from __future__ import annotations
 
@@ -107,8 +107,8 @@ def _run_cli(tmp_path):
 
 def test_v37_single_direction_apbc_on_new_lattice_rejected(tmp_path):
     """[4,4,4]/[2,2,2] with single-direction APBC (e.g., x-only) MUST
-    be rejected — the v3.7 allowlist covers only xy/xz/yz/xyz masks on
-    this lattice, and (1,0,0) is only allowed on v3.6's [6,4,1]/[2,2,1]."""
+    be rejected: the allowlist covers only xy/xz/yz/xyz masks on this
+    lattice, while (1,0,0) is allowed on [6,4,1]/[2,2,1]."""
     _prepare_stub_workspace(
         tmp_path,
         boundary_condition=["antiperiodic", "periodic", "periodic"],
@@ -116,7 +116,7 @@ def test_v37_single_direction_apbc_on_new_lattice_rejected(tmp_path):
     )
     res = _run_cli(tmp_path)
     assert res.returncode == 2, res.stderr
-    assert "not in the v3.7 allowlist" in res.stderr, res.stderr
+    assert "unsupported SOC + APBC + SubShape combination" in res.stderr, res.stderr
 
 
 def test_v37_xy_apbc_on_new_lattice_accepted_by_predicate(tmp_path):
@@ -128,11 +128,11 @@ def test_v37_xy_apbc_on_new_lattice_accepted_by_predicate(tmp_path):
         cell_shape=(4, 4, 4), sub_shape=(2, 2, 2),
     )
     res = _run_cli(tmp_path)
-    assert "not in the v3.7 allowlist" not in res.stderr, res.stderr
+    assert "unsupported SOC + APBC + SubShape combination" not in res.stderr, res.stderr
 
 
 def test_v36_shipping_fixture_still_accepted(tmp_path):
-    """[6,4,1]/[2,2,1] with AP-P-P (v3.6 case_soc_rashba_2d_sub_apbc)
+    """[6,4,1]/[2,2,1] with AP-P-P (case_soc_rashba_2d_sub_apbc)
     MUST remain accepted."""
     _prepare_stub_workspace(
         tmp_path,
@@ -140,4 +140,4 @@ def test_v36_shipping_fixture_still_accepted(tmp_path):
         cell_shape=(6, 4, 1), sub_shape=(2, 2, 1),
     )
     res = _run_cli(tmp_path)
-    assert "not in the v3.7 allowlist" not in res.stderr, res.stderr
+    assert "unsupported SOC + APBC + SubShape combination" not in res.stderr, res.stderr

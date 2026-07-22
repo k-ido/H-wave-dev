@@ -1,18 +1,18 @@
-"""v3.6 compare.py: seven-gate dispatcher + legacy energy-only compat.
+"""Seven-gate dispatcher and legacy energy-only compatibility.
 
 Two invocation modes:
 
-1. **Legacy (v1 – v3.5)**: three positional args
+1. **Legacy**: three positional args
    ``compare.py <hwave_energy_dat> <mvmc_zvo_out_dat> <case_name>``.
    Reports H-wave-vs-mVMC energy delta with the same output the existing
-   PBC / APBC fixtures rely on. Unchanged from v3.5.
+   PBC / APBC fixtures rely on.
 
-2. **v3.6 dispatcher**:
+2. **Seven-gate dispatcher**:
    ``compare.py --workspace ${WORK_DIR} --mode {g0-writer-check|g1|
      g2a-emitted-F|g2a-in-memory|g2b|g3}``.
-   Emits ONE anchored PASS record per §5.3b metadata contract using the
-   canonical helper registered in :data:`EXPECTED_MODE_DISPATCH`. See
-   docs/superpowers/specs/2026-07-09-uhfk-mvmc-pairproduct-general-v36-design.md.
+   Emits ONE anchored PASS record using the canonical helper registered
+   in :data:`EXPECTED_MODE_DISPATCH`. See
+   ``docs/en/source/uhfk/tools/uhfk_to_mvmc.rst``.
 
 The dispatcher enforces:
   - EXPECTED_MODE_DISPATCH is a deep-frozen (MappingProxyType +
@@ -39,7 +39,7 @@ from typing import List
 
 
 # ---------------------------------------------------------------------
-# Legacy energy-only helpers (kept exactly as v3.5 shipped).
+# Legacy energy-only helpers.
 # ---------------------------------------------------------------------
 
 
@@ -77,7 +77,7 @@ def parse_mvmc_zvo_out(path: str) -> List[float]:
 
 
 # ---------------------------------------------------------------------
-# v3.6 §5.3b: single source of truth for gate metadata.
+# Single source of truth for gate metadata.
 # ---------------------------------------------------------------------
 
 
@@ -218,7 +218,7 @@ def _emit_pass(
     *,
     g2_evidence=None,
 ):
-    """Print the anchored §5.3b PASS record. All metadata fields come
+    """Print the anchored PASS record. All metadata fields come
     from EXPECTED_MODE_DISPATCH (never MODE_DISPATCH) so a runtime table
     mutation cannot poison the emitted PASS."""
     expected = EXPECTED_MODE_DISPATCH[mode]
@@ -262,7 +262,7 @@ def _load_workspace_config(workspace):
     Reads workspace/hwave/input.toml + workspace/hwave/geometry_uhf.dat.
     Under the seven-gate producer contract run.sh copies both artefacts
     into ${WORK_DIR}/hwave/; missing files raise FileNotFoundError with
-    the canonical §5.6 path so a hostile stripped-down workspace cannot
+    the canonical path so a hostile stripped-down workspace cannot
     silently trigger a False-neutral PASS.
     """
     # Lazy import to keep compare.py importable without the tools tree
@@ -352,10 +352,11 @@ def _build_shipping_A(workspace, cfg):
 
 
 def _build_G_from_gauge_lift(workspace, cfg, gauge_lift_callable):
-    """Build the full 2Ns x 2Ns G matrix via the resolved gauge_lift
-    helper. Uses the boundary_theta from workspace config, NOT (0, 0, 0)
-    (Codex adversarial-review finding: the v3.5 hardcoded PBC leaks into
-    APBC gates)."""
+    """Build the full 2Ns x 2Ns G matrix via the resolved gauge_lift.
+
+    Uses the boundary_theta from workspace config, NOT (0, 0, 0). See
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
+    """
     import numpy as np
 
     green_path = os.path.join(workspace, "hwave", "green.npz")
@@ -381,10 +382,9 @@ def _build_G_from_gauge_lift(workspace, cfg, gauge_lift_callable):
 class ComplexUHFParseError(RuntimeError):
     """Raised when zvo_UHF_cisajs.dat fails a strict validation check.
 
-    Codex re-review 2026-07-12 finding 2: the earlier loader silently
-    skipped short / unparsable lines and returned zeros for an empty
-    file. That opened an escape hatch: G_cuhf = 0 and G_bridge = 0
-    both trivially agreed on an empty ComplexUHF artifact.
+    Short or unparsable lines and empty files must not silently produce
+    zeros: ``G_cuhf = 0`` and ``G_bridge = 0`` would then agree trivially
+    on an invalid ComplexUHF artifact.
     """
 
 
@@ -604,8 +604,7 @@ def _check_g2_contraction(mode, workspace, G_reference, G_final, tol):
 
 
 # ---------------------------------------------------------------------
-# Mode dispatchers (real comparisons — Codex adversarial-review
-# hardening 2026-07-12: G1/G2a-*/G2b are no longer PASS-emitting stubs).
+# Mode dispatchers (real comparisons).
 # ---------------------------------------------------------------------
 
 
@@ -663,11 +662,12 @@ def _dispatch_g0_writer_check(workspace: str, resolved, gtol: float) -> int:
 
 
 def _dispatch_g1(workspace: str, resolved, gtol: float) -> int:
-    """G1 (§5.3): shipping A density vs gauge_lift-lifted green_sublattice
+    """G1: shipping A density vs gauge_lift-lifted green_sublattice
     at ``gtol`` (1e-10 default). Both callables resolve via
     EXPECTED_MODE_DISPATCH; the composite helper string
-    ``build_slater_orbitals+gauge_lift`` is what §5.3b binds to the PASS
-    record."""
+    ``build_slater_orbitals+gauge_lift`` is bound to the PASS record. See
+    ``docs/en/source/uhfk/tools/uhfk_to_mvmc.rst``.
+    """
     import numpy as np
     build_slater_orbitals, gauge_lift = resolved
 
@@ -697,7 +697,7 @@ def _dispatch_g1(workspace: str, resolved, gtol: float) -> int:
 
 
 def _dispatch_g2a_emitted_F(workspace: str, resolved, gtol: float) -> int:
-    """G2a-emitted-F (§5.3): pair_product_density_from_F(parse_emitted_F(
+    """G2a-emitted-F: pair_product_density_from_F(parse_emitted_F(
     workspace/bridge)) vs ComplexUHF one-body Green at ``gtol`` (1e-6
     default). Fails closed on missing ComplexUHF file."""
     parse_emitted_F, pair_product_density_from_F = resolved
@@ -713,7 +713,7 @@ def _dispatch_g2a_emitted_F(workspace: str, resolved, gtol: float) -> int:
 
 
 def _dispatch_g2a_in_memory(workspace: str, resolved, gtol: float) -> int:
-    """G2a-in-memory-A (§5.3): conj(A_ship) @ A_ship.T vs ComplexUHF
+    """G2a-in-memory-A: conj(A_ship) @ A_ship.T vs ComplexUHF
     one-body Green at ``gtol`` (1e-6). A_ship is built via the canonical
     build_slater_orbitals; no shadow copy."""
     import numpy as np
@@ -729,9 +729,11 @@ def _dispatch_g2a_in_memory(workspace: str, resolved, gtol: float) -> int:
 
 
 def _dispatch_g2b(workspace: str, resolved, gtol: float) -> int:
-    """G2b (§5.3): gauge_lift-lifted green_sublattice vs ComplexUHF
+    """G2b: gauge_lift-lifted green_sublattice vs ComplexUHF
     one-body Green at ``gtol`` (1e-6). Uses boundary_theta from the
-    workspace's input.toml (Codex hardening: no more hardcoded PBC)."""
+    workspace's input.toml. See
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
+    """
     (gauge_lift,) = resolved
 
     cfg = _load_workspace_config(workspace)
@@ -745,7 +747,7 @@ def _dispatch_g2b(workspace: str, resolved, gtol: float) -> int:
 def _dispatch_g3(workspace: str, resolved, tol: float) -> int:
     (energy_relative_delta,) = resolved
     # Reuse the canonical G3 resolver so the artifact source contract
-    # (§5.6) is honored.
+    # is honored.
     from tools._uhfk_to_mvmc.energy_compare import (
         EnergyCompareError,
         _resolve_g3_paths,
@@ -797,7 +799,7 @@ _DISPATCHERS = {
 
 
 def _run_workspace_mode(args) -> int:
-    # Plan Task 3e: reject snapshot workspaces BEFORE any dispatcher can
+    # Reject snapshot workspaces BEFORE any dispatcher can
     # print a PASS record. Import lazily so the legacy energy-only path
     # does not pay the price and so this module remains importable when
     # the scripts/ helper is not on sys.path.
@@ -882,7 +884,7 @@ def _legacy_energy_main(argv: List[str]) -> int:
 
 def main(argv=None) -> int:
     argv = sys.argv if argv is None else argv
-    # Legacy: exactly three positional args and none of the v3.6 flags.
+    # Legacy: exactly three positional args and none of the workspace flags.
     legacy_flag = ("--workspace", "--mode")
     if len(argv) == 4 and not any(a.startswith(legacy_flag) for a in argv[1:]):
         return _legacy_energy_main(argv)

@@ -1,4 +1,4 @@
-"""§4b + §11.2 v3.7 schema-detection tests for
+"""Mutation schema-detection tests for
 tests/validation/uhfk_mvmc_pairproduct/scripts/soc_apbc_topology_guard.py.
 """
 import copy
@@ -81,8 +81,7 @@ def test_iter_mutation_ids_returns_v36_on_10_key_manifest(guard_mod):
 
 
 def test_iter_mutation_ids_rejects_hybrid_manifest(guard_mod):
-    """Manifest with all v3.6 keys + 5 partial v3.7 keys (15 total) MUST
-    raise, not silently accept as v3.6."""
+    """A hybrid manifest with 15 keys MUST raise, not match either schema."""
     partial_v37 = list(guard_mod._V37_MUTATION_IDS)[:5]
     manifest = {"T_M_per_mutation": {}}
     for mid in guard_mod._V36_MUTATION_IDS:
@@ -109,7 +108,7 @@ def test_iter_mutation_ids_rejects_missing_T_M(guard_mod):
 
 
 def test_split_mutator_id_v36_forms(guard_mod):
-    """v3.6 whole-vector ids return axis=None."""
+    """Whole-vector ids return axis=None."""
     base, axis = guard_mod._split_mutator_id("M-gauge-1")
     assert base == "M-gauge-1"
     assert axis is None
@@ -119,7 +118,7 @@ def test_split_mutator_id_v36_forms(guard_mod):
 
 
 def test_split_mutator_id_v37_forms(guard_mod):
-    """v3.7 per-direction ids return the correct base and axis."""
+    """Per-direction ids return the correct base and axis."""
     for axis_idx, axis_char in enumerate("xyz"):
         base, axis = guard_mod._split_mutator_id(f"M-gauge-1-{axis_char}")
         assert base == "M-gauge-1"

@@ -1,6 +1,6 @@
-"""Pinning tests for the v3.6 --debug-writer flag in tools/uhfk_to_mvmc.py.
+"""Pinning tests for the --debug-writer flag in tools/uhfk_to_mvmc.py.
 
-Spec §1.4 G0-writer-check producer contract: --debug-writer MUST dump
+The G0-writer-check producer contract requires --debug-writer to dump
 F_pre_noise.npz + F_post_aggregate.npz. Under --epsilon-noise 0 the two
 dumps are bit-identical (identity assertion in G0). Under the shipping
 1e-8 rank-lift, they differ by the noise term.
@@ -68,7 +68,7 @@ def test_debug_dump_writer_frames_writes_both_files(tmp_path):
 
 
 def test_debug_dump_frames_bit_identical_under_zero_noise(tmp_path):
-    """Spec §1.4 G0 identity: F_pre_noise == F_post_aggregate exactly
+    """G0 identity: F_pre_noise == F_post_aggregate exactly
     when the mapping+params round-trip matches F_pre (i.e. the noise
     branch of aggregate_general_orbital_params was disabled)."""
     mapping, params, F_pre = _make_mapping_and_params()

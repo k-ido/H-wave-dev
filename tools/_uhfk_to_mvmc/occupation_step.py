@@ -1,6 +1,6 @@
 """T=0 occupation step rounding with finite-T guards.
 
-Spec section 3.5: bridge consumes occupation.npz, sorts each mu-group's
+The bridge consumes occupation.npz, sorts each mu-group's
 eigenvalues, and projects to a T=0 step function. fail-fast on:
   - any state with f in (FRACTIONAL_LOW, FRACTIONAL_HIGH) — there are
     more than one such state per mu-group → SCF was not close to a Slater
@@ -41,8 +41,7 @@ def step_occupation(
         From eigen.npz.
     column_spin : (nd,) int
         From occupation.npz. -1 (Sz-free / mixed) is rejected here for
-        the v3 path; accepted when ``is_soc_mode=True`` (v3.1 path,
-        handled in Task 6).
+        the non-SOC path; accepted when ``is_soc_mode=True``.
     column_mu_group : (nd,) int
         Mu-group index per column.
     T : float
@@ -50,7 +49,7 @@ def step_occupation(
     ncond_per_group : list[int]
         Expected occupied count per mu-group (from input toml's Ncond/2Sz).
     is_soc_mode : bool, default False
-        v3.1 dispatch flag threaded through by the CLI. When True,
+        SOC dispatch flag threaded through by the CLI. When True,
         ``column_spin = -1`` (single mixed-spin block with a single
         global mu-group) is accepted and the lowest ``Ncond``
         eigenvalues are occupied regardless of spin label.
@@ -71,8 +70,8 @@ def step_occupation(
     if np.any(column_spin < 0) and not is_soc_mode:
         raise OccupationGuardError(
             "occupation_step encountered column_spin = -1 (Sz-free / "
-            "mixed block); v1/v3 spec section 7 rejects this without "
-            "is_soc_mode=True; caller must guard or enable SOC path"
+            "mixed block); this requires is_soc_mode=True. Enable the "
+            "SOC path or reject the input before calling occupation_step"
         )
 
     n_groups = len(ncond_per_group)
@@ -122,8 +121,8 @@ def step_occupation(
         if frac_mask.sum() >= 2:
             raise OccupationGuardError(
                 f"mu-group {g} has {int(frac_mask.sum())} fractional "
-                f"occupations (T={T}); spec section 3.5 forbids more than "
-                "one. Rerun SCF with smaller T or use the BCS-like v2 path"
+                f"occupations (T={T}); at most one is supported. Rerun "
+                "SCF with smaller T or use the BCS-like path"
             )
 
         # Step rounding: lowest ncond_g positions occupied

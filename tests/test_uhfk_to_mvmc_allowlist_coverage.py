@@ -1,6 +1,6 @@
-"""§11.5 allowlist coverage checker tests.
+"""Allowlist coverage checker tests.
 
-Pins the Phase 1 static checker that iterates every case_*/input.toml
+Pins the static checker that iterates every case_*/input.toml
 under a fixture root, feeds each through the CLI's own predicate
 (no drift), and enforces expected-inventory contract (all required
 present, no duplicates on allowed triples).
@@ -24,8 +24,8 @@ def test_allowlist_accepts_existing_non_soc_fixture_via_cli_predicate(
     tmp_path,
 ):
     """Non-SOC fixture (single-orbital 1D Hubbard style) MUST pass via
-    the CLI predicate's early-return branch. This pins Codex Rev.2
-    finding 1: the checker must reuse is_supported_triple so non-SOC /
+    the CLI predicate's early-return branch. The checker must reuse
+    is_supported_triple so non-SOC /
     SubShape=[1,1,1] fixtures are admissible without listing them in
     expected_map."""
     fixture = tmp_path / "case_stub_non_soc"
@@ -47,8 +47,7 @@ BoundaryCondition = ["antiperiodic", "periodic", "periodic"]
 
 
 def test_allowlist_rejects_unlisted_soc_apbc_subshape_shape(tmp_path):
-    """SOC + APBC + SubShape > 1 on a shape NOT in either v3.6 or v3.7
-    frozenset fails the CLI predicate."""
+    """An unlisted SOC + APBC + SubShape > 1 shape fails the CLI predicate."""
     fixture = tmp_path / "case_stub_novel_shape"
     fixture.mkdir()
     (fixture / "input.toml").write_text(
@@ -64,7 +63,7 @@ BoundaryCondition = ["antiperiodic", "antiperiodic", "periodic"]
 """
     )
     with pytest.raises(AllowlistCoverageError,
-                       match="not in the v3.7 allowlist"):
+                       match="not in the supported allowlist"):
         check_fixture_allowlist_coverage(
             tmp_path, expected_map={}, require_all_expected=False,
         )
@@ -113,7 +112,7 @@ def test_allowlist_accepts_mirror_pair_across_two_family_roots(tmp_path):
     """Mirror-fixture convention: same basename `case_soc_stub_xy` under
     two different parent dirs (mimicking uhfk_mvmc_pairproduct/ +
     apbc_complexuhf/ layout) with the same SOC+APBC+SubShape triple MUST
-    pass, since v3.7 ships each shipping fixture under BOTH roots by
+    pass, since each shipping fixture is present under BOTH roots by
     design."""
     for root in ("uhfk_mvmc_pairproduct", "apbc_complexuhf"):
         (tmp_path / root / "case_soc_stub_xy").mkdir(parents=True)
@@ -159,11 +158,7 @@ BoundaryCondition = ["antiperiodic", "antiperiodic", "periodic"]
 
 
 def test_allowlist_covers_real_shipping_fixtures():
-    """Real repo state check: iterating tests/validation/ MUST accept
-    every fixture currently on disk. v3.7 shipping fixtures don't
-    exist yet at Phase 1c, so expected_map is empty and
-    require_all_expected=False; this pin will be tightened when the
-    v3.7 fixture inventory lands in Phase 2a."""
+    """Iterating tests/validation/ MUST accept every fixture on disk."""
     fixture_root = _REPO / "tests" / "validation"
     check_fixture_allowlist_coverage(
         fixture_root, expected_map={}, require_all_expected=False,

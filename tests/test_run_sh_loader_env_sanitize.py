@@ -1,5 +1,6 @@
-"""Codex 3rd adversarial review 2026-07-12 pin: run.sh MUST scrub the
-loader-injection env vars (LD_LIBRARY_PATH, LD_PRELOAD, LD_AUDIT) so
+"""``run.sh`` must scrub loader-injection environment variables.
+
+LD_LIBRARY_PATH, LD_PRELOAD, and LD_AUDIT must be removed so
 the native solver child processes cannot be tampered with via the
 caller's shell environment.
 
@@ -33,8 +34,8 @@ _RUN_SH = _REPO / "tests" / "validation" / "uhfk_mvmc_pairproduct" / "run.sh"
 def _extract_sanitize_block():
     """Return the top-of-file sanitization block from run.sh as a
     standalone bash snippet, up to and including the run_native
-    function definition. Codex 4th review 2026-07-12 hardening: the
-    end marker is `run_native() { ... }`, so if a future refactor
+    function definition. The end marker is `run_native() { ... }`, so
+    if a future refactor
     moves the sanitize block below WORK setup or below any solver
     invocation, the extractor will still terminate but the parallel
     structural test (see test_sanitize_block_precedes_native_solver
@@ -54,8 +55,8 @@ def _extract_sanitize_block():
             break
     else:
         raise RuntimeError(
-            "run.sh did not contain 'run_native() { ... }'; Codex 4th "
-            "review fix has regressed."
+            "run.sh did not contain 'run_native() { ... }'; "
+            "the sanitization wrapper is missing."
         )
     return "\n".join(lines) + "\n"
 
@@ -67,8 +68,8 @@ def _source_block_and_dump_env(snippet, hostile_env):
     """Write snippet + KEEP/UNSET dump to a tmp script, run it under
     bash with `hostile_env` merged into the environment.
 
-    Codex 4th review 2026-07-12 hardening: asserts returncode == 0
-    and returns stdout only after that check. A non-zero return
+    Assert returncode == 0 and return stdout only after that check. A
+    non-zero return
     (e.g., snippet aborts on `set -e` before reaching the unsets)
     used to be silently ignored, making the test spuriously pass on
     a moved-block regression."""
@@ -101,8 +102,8 @@ def _source_block_and_dump_env(snippet, hostile_env):
 
 def _parse_env_dump(output):
     """Return {var: value_or_None} for every guarded var found in the
-    KEEP/UNSET dump. Codex 4th review 2026-07-12 hardening: assert
-    every guarded var appears in the dump so a truncated snippet
+    KEEP/UNSET dump. Assert every guarded variable appears in the dump
+    so a truncated snippet
     (which does not print the dump lines) cannot silently pass a
     var-is-absent check via `state.get(...) is None`."""
     state = {}
@@ -167,8 +168,9 @@ def test_ld_library_path_is_unset_when_no_mvmc_path_available():
 
 
 def test_sanitize_block_precedes_native_solver_invocations():
-    """Codex 4th review 2026-07-12 hardening: enforce that the
-    sanitization endpoint (`run_native() { ... }` close brace) appears
+    """Enforce that the sanitization endpoint appears before solvers.
+
+    The `run_native() { ... }` close brace must appear
     in run.sh BEFORE any `run_native` invocation and BEFORE any native
     solver call (``${VMCDRY}`` / ``${VMC}`` / ``${UHF}``). Otherwise a
     future refactor that moves the block below WORK setup or below any
@@ -214,8 +216,7 @@ def test_sanitize_block_precedes_native_solver_invocations():
 
 
 def test_run_native_uses_absolute_env_and_resists_shadowing():
-    """Codex 5th review 2026-07-12 hardening: an unqualified `env` in
-    the run_native wrapper can be shadowed by:
+    """An unqualified `env` in the run_native wrapper can be shadowed by:
       (a) a caller-exported bash function via BASH_FUNC_env%%, or
       (b) a PATH-poisoned fake env binary earlier in PATH.
     Both defeat the per-command LD sanitization. Fix: run_native calls

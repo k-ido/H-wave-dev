@@ -1,5 +1,4 @@
-"""Codex hardening 2026-07-12: seed ComplexUHF UHF with H-wave's
-converged density.
+"""Seed ComplexUHF UHF with H-wave's converged density.
 
 ComplexUHF's random initialization + independent SCF can land on a
 different broken-symmetry minimum than H-wave (both are valid mean-field
@@ -42,7 +41,7 @@ import numpy as np
 
 
 def _find_workspace_config(hwave_workspace):
-    """Load geometry + SOC config from a Phase 6 workspace."""
+    """Load geometry and SOC configuration from a validation workspace."""
     _here = os.path.dirname(os.path.abspath(__file__))
     repo = os.path.abspath(os.path.join(_here, "..", "..", "..", ".."))
     if repo not in sys.path:
@@ -135,8 +134,8 @@ def _write_initial_def(
     Skips machine-precision-zero elements to keep the file compact; the
     ComplexUHF loader defaults missing entries to 0 anyway.
 
-    ``perturb_scale`` (Codex re-review 2026-07-12 finding 1 fix): when
-    > 0, add a small random Hermitian perturbation of magnitude
+    When ``perturb_scale > 0``, add a small random Hermitian perturbation
+    of magnitude
     ``perturb_scale * |G_full|_max`` to the initial density before
     writing. Otherwise ComplexUHF is seeded at the exact SCF fixed
     point of the same Hamiltonian, terminates at 0 steps, and the
@@ -184,7 +183,7 @@ def _write_initial_def(
 
 
 def _write_provenance(initial_path, hwave_workspace, perturb_scale):
-    """Write the canonical-JSON provenance sidecar required by §6.2."""
+    """Write the canonical-JSON provenance sidecar."""
     initial_path = Path(initial_path)
     hwave_output = Path(hwave_workspace) / "output"
 
@@ -244,8 +243,7 @@ def main():
                     "ComplexUHF workspace (default: initial.def)")
     ap.add_argument("--perturb-scale", type=float, default=1e-3,
                     help="Hermitian random perturbation applied to the "
-                    "H-wave density before writing. Codex re-review "
-                    "2026-07-12 finding 1: a zero perturbation makes "
+                    "H-wave density before writing. A zero perturbation makes "
                     "ComplexUHF terminate at 0 SCF steps (circular "
                     "verification). Default 1e-3 forces real iteration "
                     "while remaining inside H-wave's basin. Pass 0 to "

@@ -1,7 +1,9 @@
-"""Tests for tools/uhfk_to_mvmc.py CLI dispatch (v3 format-first).
+"""Tests for tools/uhfk_to_mvmc.py CLI format-first dispatch.
 
-Verifies the 4-case matrix in spec §5.3:
+Verifies the four-case matrix:
   (is_antiparallel_metadata, orbitalidx_format) → routing / rejection
+
+See ``docs/en/source/uhfk/tools/uhfk_to_mvmc.rst``.
 """
 from __future__ import annotations
 
@@ -146,7 +148,7 @@ def test_dispatch_antiparallel_metadata_plus_general_format_forced_general():
         _write_fixture(tmp, two_sz=0, column_spin=(0, 1))
         res = _run_cli(tmp, _minimal_general_orbitalidx(nsite=2))
         # Should succeed via forced-General branch and possibly emit a
-        # WARNING (v2.1 closure holds → no warning expected here).
+        # WARNING (pair closure holds, so no warning is expected here).
         assert res.returncode == 0, res.stderr
 
 
@@ -171,7 +173,7 @@ def test_dispatch_not_antiparallel_plus_antiparallel_format_rejected():
 
 
 # ---------------------------------------------------------------------------
-# Task 2 regression tests: bridge boundary_input helper wiring
+# Bridge boundary_input helper wiring
 # ---------------------------------------------------------------------------
 
 
@@ -222,13 +224,12 @@ def _rewrite_eigen_npz(tmp, twist_offset, *, apbc_shifted=False):
 def test_dispatch_soc_apbc_alias_accepted(alias):
     """enable_spin_orbital = true + APBC alias -> reaches General branch.
 
-    v3.2 lifted the SOC+APBC deferral: the boundary alias helper
-    canonicalizes every AP spelling to theta = pi, and dispatch routes
-    to the General-SOC branch. This test only checks that the reject
-    that used to fire under v3.1 no longer does (no ``deferred to v3.2``
-    in stderr); a downstream failure (e.g. tiny fixture without a valid
+    The boundary alias helper canonicalizes every AP spelling to theta =
+    pi, and dispatch routes to the General-SOC branch. A downstream failure
+    (e.g. a tiny fixture without a valid
     Rashba Transfer.dat) is acceptable here because the point is the
-    dispatch gate. End-to-end validation lives in
+    dispatch gate. See ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
+    End-to-end validation lives in
     ``tests/validation/uhfk_mvmc_pairproduct/case_soc_rashba_2d_nosub_apbc``.
     """
     with tempfile.TemporaryDirectory() as tmp:
@@ -242,9 +243,6 @@ def test_dispatch_soc_apbc_alias_accepted(alias):
         res = _run_cli(tmp, _minimal_general_orbitalidx(nsite=2))
         # The reject must NOT be a boundary parsing error.
         assert "ERROR (boundary)" not in res.stderr, res.stderr
-        # v3.2: the SOC+APBC deferral is lifted; the specific reject
-        # message must no longer appear in stderr.
-        assert "deferred to v3.2" not in res.stderr, res.stderr
 
 
 @pytest.mark.parametrize(
@@ -362,14 +360,14 @@ def test_normalize_boundary_condition_list_shape():
 
 
 # ---------------------------------------------------------------------------
-# Task 4 regression tests: is_soc_mode dispatch flag + 6-case matrix
+# is_soc_mode dispatch flag and six-case matrix
 # ---------------------------------------------------------------------------
 
 
 def test_dispatch_soc_mode_forces_general_format():
     """enable_spin_orbital = true + 3-col antiparallel orbitalidx -> reject.
 
-    Spec §3.1 SOC branch: the 3/4-column antiparallel format does not
+    The 3/4-column antiparallel format does not
     carry spin-off-diagonal classes, so SOC dispatch requires the
     6-column General format. The CLI must reject before entering any
     downstream builder and emit an error mentioning ``6-column``.
@@ -392,12 +390,12 @@ def test_dispatch_soc_mode_forces_general_format():
 def test_dispatch_soc_mode_general_ok():
     """enable_spin_orbital = true + 6-col orbitalidx -> reaches General-SOC.
 
-    Spec §3.1: the ``(*, general, True)`` cell of the dispatch matrix
+    The ``(*, general, True)`` cell of the dispatch matrix
     routes to the General branch with ``is_soc_mode=True``. Tasks 5-10
     add SOC-specific behavior inside the receiving modules. The dispatch
     reaching the General branch is verified by (a) no SOC+antiparallel
     ``6-column`` reject and (b) a successful run with the ``wrote ...
-    General params`` stdout line. v3.1 spec §3.8 additionally requires
+    General params`` stdout line. The SOC path additionally requires
     ``--transfer`` and ``--emit-trans`` under SOC, so the test provides a
     minimal Transfer.dat and asks the bridge to emit trans.def alongside
     ``zqp_orbital_uhfk.dat``.
@@ -409,7 +407,7 @@ def test_dispatch_soc_mode_general_ok():
             enable_soc=True,
         )
         _rewrite_eigen_npz(tmp, twist_offset=[0.0, 0.0, 0.0])
-        # v3.1 spec §3.8: SOC path emits trans.def; provide a minimal
+        # The SOC path emits trans.def; provide a minimal
         # Wannier90-like Transfer.dat with two spin-diagonal entries
         # (R = (+1, 0, 0) and R = (-1, 0, 0)) so the emitter has data
         # to walk without inventing physics beyond the dispatch test's
@@ -433,69 +431,24 @@ def test_dispatch_soc_mode_general_ok():
         assert res.returncode == 0, res.stderr
         # No SOC+antiparallel reject fired.
         assert "6-column" not in res.stderr, res.stderr
-        # No SOC+APBC deferred-v3.2 reject fired.
-        assert "deferred to v3.2" not in res.stderr, res.stderr
         # Dispatch actually reached the General branch (writes params).
         assert "General params" in res.stdout, res.stdout
         assert os.path.exists(
             os.path.join(tmp, "zqp_orbital_uhfk.dat")
         )
-        # v3.1 spec §3.8: SOC dispatch also emits trans.def alongside.
+        # SOC dispatch also emits trans.def alongside.
         assert os.path.exists(emit_trans_path), (
             "SOC bridge should emit trans.def when --emit-trans is set"
         )
 
 
-def test_dispatch_soc_apbc_no_deferred_reject():
-    """enable_spin_orbital = true + BC=['antiperiodic', ...] -> reaches
-    dispatch (no v3.1 ``deferred to v3.2`` message fires).
-
-    v3.2 §3.8 lifts the SOC+APBC deferral: dispatch continues to the
-    General-SOC branch, which threads ``boundary_theta`` into
-    ``emit_trans_def`` so boundary-crossing trans.def rows acquire the
-    wrap-phase sign flip. End-to-end validation lives in
-    ``tests/validation/uhfk_mvmc_pairproduct/case_soc_rashba_2d_nosub_apbc``.
-    """
-    with tempfile.TemporaryDirectory() as tmp:
-        _write_fixture(tmp)
-        _rewrite_input_toml(
-            tmp, bc_entries=["antiperiodic", "periodic", "periodic"],
-            enable_soc=True,
-        )
-        # Match twist_offset to the APBC BC so the eigen-twist consistency
-        # check passes.
-        _rewrite_eigen_npz(
-            tmp, twist_offset=[0.5, 0.0, 0.0], apbc_shifted=True,
-        )
-        res = _run_cli(tmp, _minimal_general_orbitalidx(nsite=2))
-        # The v3.1 SOC+APBC-specific reject must no longer fire.
-        assert "deferred to v3.2" not in res.stderr, res.stderr
-
-
 def test_dispatch_soc_subshape_no_longer_rejects():
-    """enable_spin_orbital = true + SubShape > [1, 1, 1] is supported in
-    v3.5 (Phase D of the v3.5 gauge_lift + density check landing).
+    """enable_spin_orbital = true + SubShape > [1, 1, 1] is supported.
 
-    Historical context:
-    - v3.2 A2 (b93b913) briefly lifted the SOC + SubShape > [1, 1, 1]
-      reject but Codex Rev.1 flagged a residual Slater WF construction
-      bug (off-diagonal cross-spin entries wrong by up to 0.23), which
-      forced re-defer to v3.3 (commit 27349f1).
-    - v3.4 (commit 505f934) added the missing ``sub_offset`` contribution
-      to the plane-wave phase in ``build_slater_orbitals``'s SOC branch,
-      restoring ``case_soc_rashba_2d_sub`` to a 0.22% delta.
-    - v3.4 Rev.2 (commit 6fba3e5) re-deferred to v3.5 because the density
-      gate used a dual-A pattern (reference A for the check, shipping A
-      for mVMC) that validated the reference A but not the shipping A.
-    - v3.5 Phase A (this task's predecessor) introduced ``gauge_lift`` to
-      map ``green_sublattice`` into the physical basis, closing the
-      independent-shipping-A-validation gap.
-
-    This test asserts the pre-v3.5 SubShape reject is fully lifted:
-    SOC + SubShape > [1, 1, 1] must NOT return code 2 with a v3.3/v3.4
-    defer message. Downstream errors (the minimal fixture is not a
+    Downstream errors (the minimal fixture is not a
     converged SCF, so the density check or Slater emit may still error)
-    are permissible; only the SubShape dispatch guard is under test.
+    are permissible; only the SubShape dispatch guard is under test. See
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     Nsite = 4
     subvol = 2
@@ -557,23 +510,23 @@ def test_dispatch_soc_subshape_no_longer_rejects():
                 "--emit-orbitalidx", emit_orbitalidx_path,
             ),
         )
-        # The v3.3/v3.4 SubShape reject must NOT fire.
-        assert "not validated in v3.3" not in res.stderr, res.stderr
-        assert "not shippable in v3.4" not in res.stderr, res.stderr
-        # The v3.4 Rev.2 defer-to-v3.5 marker must not appear either.
-        assert "Codex v3.4 Rev.2" not in res.stderr, res.stderr
+        # The dispatch guards must not fire: with --emit-orbitalidx supplied
+        # and no antiperiodic direction, SOC + SubShape > [1, 1, 1] is
+        # supported, so any failure has to come from a later stage.
+        assert "requires --emit-orbitalidx" not in res.stderr, res.stderr
+        assert (
+            "unsupported SOC + APBC + SubShape combination" not in res.stderr
+        ), res.stderr
 
 
 def test_dispatch_soc_single_apbc_arbitrary_subshape_rejected_by_v37_allowlist():
-    """v3.7 narrows v3.6's blanket "any single-direction APBC + any
-    SubShape > 1" acceptance to two exact shipping shapes:
-      (a) v3.6: CellShape=[6,4,1] / SubShape=[2,2,1]
-      (b) v3.7: CellShape=[4,4,4] / SubShape=[2,2,2]
+    """The allowlist contains two exact shipping shapes:
+      (a) CellShape=[6,4,1] / SubShape=[2,2,1]
+      (b) CellShape=[4,4,4] / SubShape=[2,2,2]
 
     An arbitrary non-shipping shape like CellShape=[4,1,1] /
     SubShape=[2,1,1] with single-direction APBC MUST be rejected
-    pre-dispatch with the v3.7 allowlist's REJECT_MESSAGE, even though
-    v3.6's blanket single-direction-APBC check would have admitted it.
+    pre-dispatch with the allowlist's REJECT_MESSAGE.
     """
     Nsite = 4
     subvol = 2
@@ -638,12 +591,12 @@ def test_dispatch_soc_single_apbc_arbitrary_subshape_rejected_by_v37_allowlist()
         )
         from tools._uhfk_to_mvmc.allowlist_predicate import REJECT_MESSAGE
 
-        # v3.7: single-direction APBC on a non-shipping CellShape/SubShape
+        # Single-direction APBC on a non-shipping CellShape/SubShape
         # (here [4,1,1]/[2,1,1]) is not one of the two allowlisted
         # (apbc_mask, sub_shape, cell_shape) triples, so it must be
-        # rejected pre-dispatch with the v3.7 REJECT_MESSAGE.
+        # rejected pre-dispatch with REJECT_MESSAGE.
         assert res.returncode == 2, (
-            "v3.7 allowlist: single-direction APBC on a non-shipping "
+            "Supported allowlist: single-direction APBC on a non-shipping "
             "CellShape/SubShape must be rejected pre-dispatch. Got "
             f"returncode={res.returncode}; stderr={res.stderr!r}"
         )
@@ -651,7 +604,7 @@ def test_dispatch_soc_single_apbc_arbitrary_subshape_rejected_by_v37_allowlist()
 
 
 # ---------------------------------------------------------------------------
-# Codex Rev.2 finding 2 regression tests: SOC output preflight
+# SOC output preflight
 # ---------------------------------------------------------------------------
 
 
@@ -706,7 +659,7 @@ def _run_cli_soc_with_paths(
 def test_dispatch_rejects_soc_output_same_path():
     """SOC with --output == --emit-trans -> pre-write reject.
 
-    Codex Rev.2 finding 2: two independent ``os.replace`` calls are not
+    Two independent ``os.replace`` calls are not
     truly atomic. If both flags target the same file, the second call
     would silently overwrite the first commit; the preflight must catch
     this before either temp file is opened.
@@ -740,7 +693,7 @@ def test_dispatch_rejects_soc_output_same_path():
 def test_dispatch_rejects_soc_output_directory_target():
     """SOC with --output pointing at an existing directory -> reject.
 
-    Codex Rev.2 finding 2: ``os.replace`` cannot atomically overwrite a
+    ``os.replace`` cannot atomically overwrite a
     directory with a file, so the preflight rejects this up front.
     Confirms the reject fires without a partial write and that the
     directory is untouched.
@@ -800,12 +753,11 @@ def test_dispatch_rejects_soc_emit_trans_directory_target():
 
 
 def test_dispatch_soc_multi_apbc_subshape_rejects_pre_dispatch():
-    """v3.7 §8 allowlist (spec docs/superpowers/specs/2026-07-12-uhfk-
-    mvmc-pairproduct-general-v37-design.md): SOC + multi-direction APBC
+    """SOC + multi-direction APBC
     (xy mask) + SubShape=[2,2,1] on CellShape=[4,4,1] is not one of the
     two validated (apbc_mask, sub_shape, cell_shape) triples in
-    ``tools._uhfk_to_mvmc.allowlist_predicate`` (v3.6's shipping shape
-    is CellShape=[6,4,1]/SubShape=[2,2,1]; v3.7's is
+    ``tools._uhfk_to_mvmc.allowlist_predicate`` (the shipping shapes are
+    CellShape=[6,4,1]/SubShape=[2,2,1] and
     CellShape=[4,4,4]/SubShape=[2,2,2]), so it remains pre-dispatch
     rejected. Complements the shape-narrowing pin
     ``test_dispatch_soc_single_apbc_arbitrary_subshape_rejected_by_v37_allowlist``.
@@ -874,7 +826,7 @@ def test_dispatch_soc_multi_apbc_subshape_rejects_pre_dispatch():
         from tools._uhfk_to_mvmc.allowlist_predicate import REJECT_MESSAGE
 
         assert res.returncode == 2, (
-            "v3.7 allowlist: SOC + APBC + SubShape combination not "
+            "Supported allowlist: SOC + APBC + SubShape combination not "
             "covered by tools._uhfk_to_mvmc.allowlist_predicate must "
             f"fire pre-dispatch. Got returncode={res.returncode}; "
             f"stderr={res.stderr!r}"

@@ -4,10 +4,9 @@ Two coverage points:
 
 1. ``test_save_greenone_soc_emits_all_st_combinations`` verifies that under
    ``enable_spin_orbital = true`` the greenone writer emits rows for every
-   ``(s, t) in {0, 1}^2`` that ``OneBodyG.dat`` requests. Historically the
-   SOC branch was a NO-OP (early-return), so the file never appeared.
+   ``(s, t) in {0, 1}^2`` that ``OneBodyG.dat`` requests.
 2. ``test_save_greenone_backward_compat_non_soc`` locks in the non-SOC
-   path: only ``s == t`` rows are emitted, matching pre-v3.1 behaviour.
+   path: only ``s == t`` rows are emitted.
 
 Both tests drive H-wave end-to-end through a temporary input directory so
 the SOC packing convention (``2 * a + s``) is exercised as it appears in
@@ -194,7 +193,7 @@ def _write_minimal_soc_input(tmp_path: Path) -> Path:
 def _write_minimal_non_soc_input(tmp_path: Path) -> Path:
     """Non-SOC fixture: 3-site 1D chain, 1 physical orbital / cell,
     Norbit=1, NN hopping ``t = 1``, U=0. OneBodyG.dat requests only the
-    ``s == t`` rows, matching the pre-v3.1 emission set."""
+    ``s == t`` rows."""
     _write_input_toml(tmp_path / "input.toml", enable_spin_orbital=False)
     _write_geometry_dat(tmp_path / "Geometry.dat", norbit=1)
     _write_geometry_uhf_dat(tmp_path / "geometry_uhf.dat", nsites=3)
@@ -259,8 +258,7 @@ def test_save_greenone_soc_emits_all_st_combinations(tmp_path):
     """SCF with ``enable_spin_orbital = true``: ``_save_greenone`` writes
     rows for every ``(s, t) in {0, 1}^2`` requested in ``OneBodyG.dat``.
 
-    Before Task 3 the SOC branch returned ``None`` and no file was
-    written, so this test would fail at ``_parse_greenone``.
+    This test exercises the writer through ``UHFk.solve``.
     """
     input_dir = _write_minimal_soc_input(tmp_path)
     _run_hwave(input_dir)

@@ -1,6 +1,7 @@
-"""Pinning tests for v3.6 energy_relative_delta helper + G3 workspace resolver.
+"""Pinning tests for energy_relative_delta and the G3 workspace resolver.
 
-Spec §5.6 (docs/superpowers/specs/2026-07-09-uhfk-mvmc-pairproduct-general-v36-design.md).
+See ``docs/en/source/uhfk/tools/uhfk_to_mvmc.rst`` for the validation
+contract.
 """
 from __future__ import annotations
 
@@ -33,7 +34,7 @@ def _write_mvmc_zvo_out(tmp_path, samples):
 
 
 def test_energy_relative_delta_hand(tmp_path):
-    """Spec §5.6 pin 1: hand-written E_h=1.0, E_m=1.001, delta_rel=1e-3."""
+    """Hand-written E_h=1.0, E_m=1.001, delta_rel=1e-3."""
     hwave = _write_hwave_energy(tmp_path, 1.0)
     mvmc = _write_mvmc_zvo_out(tmp_path, [1.001])
     e_h, e_m, delta = energy_relative_delta(hwave, mvmc)
@@ -122,15 +123,14 @@ def test_parse_mvmc_zvo_out_rejects_malformed_row(tmp_path):
 
 
 @pytest.mark.skip(
-    reason="Phase 3 will regenerate a v1 case_pbc reference for this pin"
+    reason="A regenerated case_pbc energy reference is not available"
 )
 def test_energy_relative_delta_v1_case_pbc():
-    """Spec §5.6 pin 2 (deferred).
+    """Deferred case_pbc energy comparison.
 
-    On the existing v1 case_pbc fixture output (post shipping bridge run),
-    assert delta_rel matches the existing v1 compare.py energy report
-    within 5e-7. Requires the v1 fixture to be regenerated with the
-    Phase 3 workflow; skipped for Phase 1b.
+    On the case_pbc fixture output, assert delta_rel matches the existing
+    compare.py energy report within 5e-7. This requires a regenerated
+    fixture reference.
     """
     pass
 
@@ -149,7 +149,7 @@ def test_resolve_g3_paths_returns_canonical_paths(tmp_path):
 
 
 def test_resolve_g3_paths_missing_hwave_energy(tmp_path):
-    """Spec §5.6 pin 3: missing hwave/energy.dat raises with the documented message."""
+    """Missing hwave/energy.dat raises with the documented message."""
     mvmc_dir = tmp_path / "mvmc"
     mvmc_dir.mkdir()
     (mvmc_dir / "zvo_out_selected.dat").write_text("-1.0 1.0 0 0 0 0\n")
@@ -158,10 +158,10 @@ def test_resolve_g3_paths_missing_hwave_energy(tmp_path):
 
 
 def test_resolve_g3_paths_missing_zvo_out_selected(tmp_path):
-    """Spec §5.6 pin 4: missing mvmc/zvo_out_selected.dat raises with the
+    """Missing mvmc/zvo_out_selected.dat raises with the
     documented run.sh normalization message. This test explicitly does NOT
     scan raw zvo_out_*.dat files — that is `normalize_mvmc_output`'s job in
-    run.sh (Phase 6)."""
+    run.sh."""
     hwave_dir = tmp_path / "hwave"
     hwave_dir.mkdir()
     (hwave_dir / "energy.dat").write_text("Energy_Total = -1.0\n")

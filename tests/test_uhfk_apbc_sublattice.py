@@ -1,4 +1,4 @@
-"""APBC under SubShape > [1, 1, 1] (v2): SubShape-independence + analytic match.
+"""APBC under SubShape > [1, 1, 1]: SubShape-independence + analytic match.
 
 These tests drive the full _init_interaction -> _make_ham_trans pipeline on
 object.__new__(UHFk) stubs. _init_interaction injects the gauge phase into

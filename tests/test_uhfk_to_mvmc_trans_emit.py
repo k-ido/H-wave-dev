@@ -1,4 +1,4 @@
-"""Tests for tools/_uhfk_to_mvmc/trans_emit.py (v3.1 spec §3.8)."""
+"""Tests for tools/_uhfk_to_mvmc/trans_emit.py."""
 from __future__ import annotations
 
 import os
@@ -46,7 +46,10 @@ def _write_transfer(path, rows):
 
 @pytest.mark.parametrize("a, s", [(0, 0), (0, 1)])
 def test_unpack_soi_roundtrip(a, s):
-    """v3.1 uses norb_orig=1, so only (a, s) = (0, 0), (0, 1) appear."""
+    """norb_orig=1 permits only (a, s) = (0, 0), (0, 1).
+
+    See ``docs/en/source/uhfk/tools/uhfk_to_mvmc.rst``.
+    """
     iWan = 2 * a + s + 1
     assert _unpack_soi(iWan) == (a, s)
 
@@ -239,11 +242,12 @@ def test_emit_trans_def_spin_diagonal_conjugates_complex_value(tmp_path):
 def test_emit_trans_def_spin_symmetric_complex_soc_swaps_and_conjugates(
     tmp_path,
 ):
-    """A v3.7-shaped spin-symmetric SOC block exposes the old ``+v`` bug.
+    """A spin-symmetric SOC block exposes the old ``+v`` bug.
 
     Both off-diagonal H-wave spin entries carry ``0.3+0.4j``. The general
     mapping swaps the spin labels and emits ``-conj(v)``; the row order pins
-    which source Transfer entry produced each emitted row.
+    which source Transfer entry produced each emitted row. See
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     src = tmp_path / "Transfer.dat"
     out = tmp_path / "trans.def"
@@ -259,12 +263,12 @@ def test_emit_trans_def_spin_symmetric_complex_soc_swaps_and_conjugates(
     emitted_values = [complex(row[4], row[5]) for row in rows]
     assert emitted_values == pytest.approx([-value.conjugate()] * 2)
     assert all(emitted != pytest.approx(value) for emitted in emitted_values), (
-        "v3.7 regression must differ from the old spin-preserving +v rule"
+        "regression must differ from the old spin-preserving +v rule"
     )
 
 
 def test_emit_trans_def_v36_rashba_matches_old_plus_v_matrix(tmp_path):
-    """The v3.6 x/y Rashba spin matrices hide the old rule's defect.
+    """The x/y Rashba spin matrices hide the old rule's defect.
 
     At fixed R they obey ``v[t,s] = -conj(v[s,t])``: the x pair has equal
     imaginary entries and the y pair has antisymmetric real entries.
@@ -276,7 +280,8 @@ def test_emit_trans_def_v36_rashba_matches_old_plus_v_matrix(tmp_path):
     text is NOT byte-identical to the old rule's: off-diagonal rows carry
     swapped spin labels and the partner row supplies the transposed
     entry. Byte stability across this change is not a contract; see the
-    module docstring in ``trans_emit.py``.
+    module docstring in ``trans_emit.py`` and
+    ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
     """
     src = tmp_path / "Transfer.dat"
     out = tmp_path / "trans.def"
@@ -327,7 +332,10 @@ def test_emit_trans_def_matches_vmcdry_format_prefix(tmp_path):
 
 
 def test_emit_trans_def_rejects_non_norb1_orbital(tmp_path):
-    """v3.1 assumes norb_orig=1: iWan=3 (a_phys=1) must fail loudly."""
+    """With norb_orig=1, iWan=3 (a_phys=1) must fail loudly.
+
+    See ``docs/en/source/uhfk/tools/uhfk_to_mvmc.rst``.
+    """
     src = tmp_path / "Transfer.dat"
     out = tmp_path / "trans.def"
     _write_transfer(str(src), [(0, 0, 0, 3, 1, 1.0, 0.0)])
@@ -486,7 +494,7 @@ def _run_soc_bridge(tmp_path):
 
 
 def _make_soc_sublattice_fixture(tmp_path, *, transfer_body=None):
-    """Copy the tracked v3.6 SOC + SubShape fixture into ``tmp_path``."""
+    """Copy the tracked SOC + SubShape fixture into ``tmp_path``."""
     fixture_dir = os.path.join(
         REPO_ROOT,
         "tests/validation/uhfk_mvmc_pairproduct/"
@@ -795,7 +803,8 @@ def test_atomic_output_no_partial_state_on_failure(tmp_path):
     """
     tmp = str(tmp_path)
     # This real same-index on-site term passes Hermiticity, but iWan=jWan=3
-    # decodes to physical orbital 1, outside v3.1's single-orbital scope.
+    # decodes to physical orbital 1, outside the single-orbital scope. See
+    # ``docs/en/source/uhfk/tools/uhfk_to_mvmc.rst``.
     transfer_body = (
         "test header\n"
         "3\n"
@@ -936,14 +945,14 @@ def _read_trans_def_rows(path):
 
 
 # ---------------------------------------------------------------------------
-# v3.2 SOC + APBC regression tests: boundary_theta wrap-phase behavior
+# SOC + APBC boundary_theta wrap-phase behavior. See
+# ``docs/en/source/algorithm/uhfk_to_mvmc.rst``.
 # ---------------------------------------------------------------------------
 
 
 def test_emit_trans_def_no_gauge_when_boundary_theta_none(tmp_path):
     """Default (boundary_theta=None) is byte-identical to explicit
-    all-PBC (boundary_theta=(0, 0, 0)). Guards non-SOC/PBC path against
-    silent regression when the v3.2 gauge branch was added.
+    all-PBC (boundary_theta=(0, 0, 0)).
     """
     src = tmp_path / "Transfer.dat"
     _write_transfer(src, [
